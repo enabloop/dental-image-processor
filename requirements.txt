@@ -1,0 +1,8 @@
+streamlit
+numpy
+opencv-python-headless
+pydicom
+Pillow
+streamlit-drawable-canvas
+pylibjpeg>=2.0
+pylibjpeg-libjpeg>=2.1

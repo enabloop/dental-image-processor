@@ -1,14 +1,16 @@
-from skimage.restoration import denoise_tv_chambolle
 import io
-import math 
-
 from pathlib import Path
+
 import cv2
 import numpy as np
-import pydicom
 import streamlit as st
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+
+try:
+    import pydicom
+    DICOM_AVAILABLE = True
+except ImportError:
+    DICOM_AVAILABLE = False
 
 
 # ============================================================
@@ -16,566 +18,901 @@ from streamlit_drawable_canvas import st_canvas
 # ============================================================
 
 st.set_page_config(
-    page_title="Dental Image Processor",
+    page_title="Dental ImageJ Processor",
     page_icon="🦷",
     layout="wide",
-)
-
-st.title("🦷 Dental Image Processor")
-
-st.caption(
-    "CLAHE • Median Filter • Standard Sharpening • "
-    "Unsharp Masking • DICOM • Pixel/mm Measurement"
+    initial_sidebar_state="expanded",
 )
 
 
 # ============================================================
-# IMAGE NORMALIZATION
+# CSS
 # ============================================================
 
-def normalize_to_uint8(array):
+st.markdown(
     """
-    Convert arbitrary grayscale data to uint8.
+    <style>
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        max-width: 1500px;
+    }
+
+    h1 {
+        margin-bottom: 0.15rem;
+    }
+
+    .subtitle {
+        color: #777;
+        margin-bottom: 1.5rem;
+    }
+
+    .mode-box {
+        padding: 0.7rem 0.9rem;
+        border-radius: 10px;
+        background: rgba(120,120,120,0.08);
+        margin-bottom: 0.8rem;
+    }
+
+    .small-note {
+        color: #777;
+        font-size: 0.85rem;
+    }
+
+    div[data-testid="stImage"] img {
+        border-radius: 6px;
+    }
+
+    .stDownloadButton button {
+        width: 100%;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# TITLE
+# ============================================================
+
+st.title("🦷 Dental ImageJ Processor")
+
+st.markdown(
+    '<div class="subtitle">'
+    "Dental radiograph enhancement using ImageJ/Fiji-style image-processing operations"
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
+
+def normalize_to_uint8(image):
     """
+    Convert arbitrary numeric image data to uint8.
 
-    array = np.asarray(
-        array,
-        dtype=np.float32,
-    )
+    Percentile normalization is used for floating-point and
+    higher-bit-depth images so that display is robust.
+    """
+    image = np.asarray(image)
 
-    finite = np.isfinite(array)
+    if image.dtype == np.uint8:
+        return image.copy()
+
+    image = image.astype(np.float32)
+
+    finite = np.isfinite(image)
 
     if not np.any(finite):
+        return np.zeros(image.shape, dtype=np.uint8)
 
-        return np.zeros(
-            array.shape,
-            dtype=np.uint8,
-        )
+    valid = image[finite]
 
-    minimum = np.min(
-        array[finite]
+    low = np.percentile(valid, 0.5)
+    high = np.percentile(valid, 99.5)
+
+    if high <= low:
+        low = float(valid.min())
+        high = float(valid.max())
+
+    if high <= low:
+        return np.zeros(image.shape, dtype=np.uint8)
+
+    image = (image - low) / (high - low)
+    image = np.clip(image, 0, 1)
+
+    return (image * 255).astype(np.uint8)
+
+
+def ensure_gray(image):
+    """
+    Convert an image to grayscale.
+    """
+    image = np.asarray(image)
+
+    if image.ndim == 2:
+        return image
+
+    if image.ndim == 3:
+        if image.shape[2] == 1:
+            return image[:, :, 0]
+
+        return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    raise ValueError("Unsupported image dimensions.")
+
+
+def prepare_image(image):
+    """
+    Convert input to display/processable uint8 grayscale.
+    """
+    image = ensure_gray(image)
+    return normalize_to_uint8(image)
+
+
+def resize_for_display(image, max_width=1400, max_height=1000):
+    """
+    Resize only for display.
+    Processing is performed on the original resolution.
+    """
+    h, w = image.shape[:2]
+
+    scale = min(
+        max_width / max(w, 1),
+        max_height / max(h, 1),
+        1.0,
     )
 
-    maximum = np.max(
-        array[finite]
+    if scale >= 1:
+        return image
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    return cv2.resize(
+        image,
+        (new_w, new_h),
+        interpolation=cv2.INTER_AREA,
     )
 
-    if maximum <= minimum:
 
-        return np.zeros(
-            array.shape,
-            dtype=np.uint8,
-        )
+def image_to_png_bytes(image):
+    """
+    Convert grayscale uint8 image to PNG bytes.
+    """
+    image = normalize_to_uint8(image)
 
-    normalized = (
-        (array - minimum)
-        / (maximum - minimum)
-        * 255.0
-    )
+    ok, encoded = cv2.imencode(".png", image)
 
-    return np.clip(
-        normalized,
-        0,
-        255,
-    ).astype(
-        np.uint8
-    )
+    if not ok:
+        raise ValueError("Could not encode image.")
+
+    return encoded.tobytes()
 
 
 # ============================================================
-# DICOM LOADING
+# DICOM
 # ============================================================
 
-def load_dicom(file):
-
-    ds = pydicom.dcmread(
-        file,
-        force=True,
-    )
-
-    # --------------------------------------------------------
-    # Read pixel data
-    # --------------------------------------------------------
-
-    try:
-
-        image = ds.pixel_array.astype(
-            np.float32
-        )
-
-    except Exception as error:
-
+def load_dicom(file_bytes):
+    """
+    Load DICOM pixel data and apply common modality transformations.
+    """
+    if not DICOM_AVAILABLE:
         raise RuntimeError(
-            "This DICOM contains compressed pixel data "
-            "that the current Playground environment "
-            "cannot decode.\n\n"
-            "If this is a JPEG Lossless DICOM, the "
-            "normal Streamlit deployment should use "
-            "pylibjpeg/gdcm for decoding.\n\n"
-            f"Original error:\n{error}"
-        ) from error
-
-    # --------------------------------------------------------
-    # Rescale slope/intercept
-    # --------------------------------------------------------
-
-    slope = float(
-        getattr(
-            ds,
-            "RescaleSlope",
-            1.0,
+            "pydicom is not installed. Add pydicom to requirements.txt."
         )
-    )
 
-    intercept = float(
-        getattr(
-            ds,
-            "RescaleIntercept",
-            0.0,
-        )
-    )
+    ds = pydicom.dcmread(io.BytesIO(file_bytes))
 
-    image = (
-        image * slope
-        + intercept
-    )
+    pixels = ds.pixel_array.astype(np.float32)
 
-    # --------------------------------------------------------
-    # MONOCHROME1
-    # --------------------------------------------------------
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+
+    pixels = pixels * slope + intercept
 
     photometric = str(
-        getattr(
-            ds,
-            "PhotometricInterpretation",
-            "MONOCHROME2",
-        )
-    )
+        getattr(ds, "PhotometricInterpretation", "")
+    ).upper()
 
     if photometric == "MONOCHROME1":
+        pixels = np.max(pixels) - pixels
 
-        image = (
-            np.max(image)
-            - image
-        )
+    # Apply window center/width when available.
+    wc = getattr(ds, "WindowCenter", None)
+    ww = getattr(ds, "WindowWidth", None)
 
-    # --------------------------------------------------------
-    # DICOM Window Center / Width
-    # --------------------------------------------------------
-
-    window_center = getattr(
-        ds,
-        "WindowCenter",
-        None,
-    )
-
-    window_width = getattr(
-        ds,
-        "WindowWidth",
-        None,
-    )
-
-    if (
-        window_center is not None
-        and window_width is not None
-    ):
-
+    if wc is not None and ww is not None:
         try:
-
-            if hasattr(
-                window_center,
-                "__len__",
-            ):
-
-                center = float(
-                    window_center[0]
-                )
-
+            if isinstance(wc, pydicom.multival.MultiValue):
+                wc = float(wc[0])
             else:
+                wc = float(wc)
 
-                center = float(
-                    window_center
-                )
-
-            if hasattr(
-                window_width,
-                "__len__",
-            ):
-
-                width_value = float(
-                    window_width[0]
-                )
-
+            if isinstance(ww, pydicom.multival.MultiValue):
+                ww = float(ww[0])
             else:
+                ww = float(ww)
 
-                width_value = float(
-                    window_width
-                )
-
-            if width_value > 1:
-
-                low = (
-                    center
-                    - width_value / 2
-                )
-
-                high = (
-                    center
-                    + width_value / 2
-                )
-
-                image = np.clip(
-                    image,
-                    low,
-                    high,
-                )
+            if ww > 0:
+                low = wc - ww / 2.0
+                high = wc + ww / 2.0
+                pixels = np.clip(pixels, low, high)
 
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # Normalize to uint8
-    # --------------------------------------------------------
-
-    image = normalize_to_uint8(
-        image
-    )
-
-    # --------------------------------------------------------
-    # Pixel spacing
-    # --------------------------------------------------------
-
-    pixel_spacing = getattr(
-        ds,
-        "PixelSpacing",
-        None,
-    )
-
-    spacing = None
-
-    if (
-        pixel_spacing is not None
-        and len(pixel_spacing) >= 2
-    ):
-
-        try:
-
-            spacing = (
-                float(
-                    pixel_spacing[0]
-                ),
-                float(
-                    pixel_spacing[1]
-                ),
-            )
-
-        except Exception:
-
-            spacing = None
-
-    return (
-        image,
-        ds,
-        spacing,
-    )
+    return normalize_to_uint8(pixels)
 
 
-# ============================================================
-# REGULAR IMAGE LOADING
-# ============================================================
+def load_uploaded_image(uploaded_file):
+    """
+    Load PNG/JPG/TIFF/DICOM.
+    """
+    data = uploaded_file.getvalue()
 
-def load_regular_image(file):
+    suffix = Path(uploaded_file.name).suffix.lower()
 
-    data = file.read()
-
-    image = Image.open(
-        io.BytesIO(data)
-    ).convert("L")
-
-    return (
-        np.array(image),
-        None,
-        None,
-    )
-
-
-def load_image(file):
-
-    filename = file.name.lower()
-
-    if filename.endswith(
-        ".dcm"
-    ):
-
-        return load_dicom(
-            file
-        )
+    if suffix in [".dcm", ".dicom"]:
+        return load_dicom(data)
 
     try:
-
-        file.seek(0)
-
-        return load_regular_image(
-            file
-        )
+        pil = Image.open(io.BytesIO(data))
+        arr = np.array(pil)
+        return prepare_image(arr)
 
     except Exception:
+        # Some DICOM files do not have .dcm extension.
+        if DICOM_AVAILABLE:
+            try:
+                return load_dicom(data)
+            except Exception:
+                pass
 
-        file.seek(0)
-
-        return load_dicom(
-            file
+        raise ValueError(
+            "Could not read this file as an image or DICOM."
         )
 
 
 # ============================================================
-# IMAGE PROCESSING
+# IMAGEJ-STYLE CONTRAST
 # ============================================================
 
-def process_image(
+def imagej_enhance_contrast(
     image,
-
-    # Median
-    use_median,
-    median_kernel,
-
-    # CLAHE
-    use_clahe,
-    clip_limit,
-    tile_size,
-
-    # Standard sharpening
-    use_sharpen,
-    sharpen_strength,
-
-    # USM
-    use_usm,
-    usm_sigma,
-    usm_amount,
-    usm_threshold,
+    saturated=0.35,
+    normalize=True,
 ):
+    """
+    ImageJ-style histogram stretching.
 
-    result = image.copy()
+    ImageJ's Enhance Contrast command uses histogram stretching
+    and optionally normalization/equalization.
+    """
+    image = image.astype(np.float32)
 
-    # --------------------------------------------------------
-    # Make absolutely sure OpenCV receives uint8
-    # --------------------------------------------------------
+    flat = image.ravel()
 
-    if result.dtype != np.uint8:
+    low = np.percentile(flat, saturated / 2.0)
+    high = np.percentile(flat, 100.0 - saturated / 2.0)
 
-        result = normalize_to_uint8(
-            result
-        )
+    if high <= low:
+        return normalize_to_uint8(image)
 
-    # ========================================================
-    # MEDIAN FILTER
-    # ========================================================
+    result = (image - low) * 255.0 / (high - low)
 
-    if use_median:
+    result = np.clip(result, 0, 255)
 
-        result = cv2.medianBlur(
-            result,
-            int(
-                median_kernel
-            ),
-        )
+    if normalize:
+        return result.astype(np.uint8)
 
-    # ========================================================
-    # CLAHE
-    # ========================================================
+    return result.astype(np.uint8)
 
-    if use_clahe:
 
-        clahe = cv2.createCLAHE(
-            clipLimit=float(
-                clip_limit
-            ),
-            tileGridSize=(
-                int(
-                    tile_size
-                ),
-                int(
-                    tile_size
-                ),
-            ),
-        )
+def histogram_equalization(image):
+    return cv2.equalizeHist(
+        normalize_to_uint8(image)
+    )
 
-        result = clahe.apply(
-            result
-        )
 
-    # ========================================================
-    # STANDARD SHARPENING
-    # ========================================================
-    #
-    # This is your ORIGINAL sharpening method.
-    #
-    # It remains completely independent from USM.
-    #
-    # ========================================================
+# ============================================================
+# CLAHE
+# ============================================================
 
-    if use_sharpen:
+def imagej_clahe(
+    image,
+    block_size=127,
+    bins=256,
+    max_slope=3.0,
+):
+    """
+    Practical OpenCV implementation of CLAHE.
 
-        sharpening_kernel = np.array(
-            [
-                [0, -1, 0],
-                [-1, 5, -1],
-                [0, -1, 0],
-            ],
-            dtype=np.float32,
-        )
+    ImageJ/Fiji's CLAHE exposes:
+        block size
+        histogram bins
+        maximum slope
 
-        identity = np.zeros(
-            (
-                3,
-                3,
-            ),
-            dtype=np.float32,
-        )
+    OpenCV uses:
+        tile grid
+        clip limit
 
-        identity[1, 1] = 1.0
+    The mapping below provides a controllable ImageJ-like
+    interface while using OpenCV's optimized CLAHE engine.
+    """
+    image = normalize_to_uint8(image)
 
-        kernel = (
-            identity
-            + float(
-                sharpen_strength
-            )
-            * (
-                sharpening_kernel
-                - identity
-            )
-        )
+    h, w = image.shape
 
-        result = cv2.filter2D(
-            result,
-            -1,
-            kernel,
-        )
+    tile_x = max(2, int(round(w / block_size)))
+    tile_y = max(2, int(round(h / block_size)))
 
-        result = np.clip(
-            result,
-            0,
-            255,
-        ).astype(
-            np.uint8
-        )
+    tile_x = min(tile_x, 32)
+    tile_y = min(tile_y, 32)
 
-    # ========================================================
-    # UNSHARP MASKING (USM)
-    # ========================================================
-    #
-    # USM:
-    #
-    # sharpened =
-    # original + amount * (original - blurred)
-    #
-    # ========================================================
+    # Map ImageJ-like slope to OpenCV clip limit.
+    clip_limit = max(1.0, float(max_slope))
 
-    if use_usm:
+    clahe = cv2.createCLAHE(
+        clipLimit=clip_limit,
+        tileGridSize=(tile_x, tile_y),
+    )
 
-        # ----------------------------------------------------
-        # Gaussian blur
-        # ----------------------------------------------------
+    return clahe.apply(image)
 
-        blurred = cv2.GaussianBlur(
-            result,
-            (
-                0,
-                0,
-            ),
-            sigmaX=float(
-                usm_sigma
-            ),
-            sigmaY=float(
-                usm_sigma
-            ),
-        )
 
-        # ----------------------------------------------------
-        # Difference / high-frequency mask
-        # ----------------------------------------------------
+# ============================================================
+# GAUSSIAN
+# ============================================================
 
-        mask = (
-            result.astype(
-                np.float32
-            )
-            -
-            blurred.astype(
-                np.float32
-            )
-        )
+def gaussian_blur(image, sigma):
+    image = normalize_to_uint8(image)
 
-        # ----------------------------------------------------
-        # Threshold
-        #
-        # Small differences can be interpreted as noise.
-        # Setting a threshold to 0 disables thresholding.
-        # ----------------------------------------------------
+    sigma = float(sigma)
 
-        if float(
-            usm_threshold
-        ) > 0:
+    if sigma <= 0:
+        return image.copy()
 
-            mask[
-                np.abs(mask)
-                < float(
-                    usm_threshold
-                )
-            ] = 0.0
+    k = max(3, int(round(sigma * 6)) | 1)
 
-        # ----------------------------------------------------
-        # Apply USM
-        # ----------------------------------------------------
+    return cv2.GaussianBlur(
+        image,
+        (k, k),
+        sigmaX=sigma,
+        sigmaY=sigma,
+    )
 
-        sharpened = (
-            result.astype(
-                np.float32
-            )
-            +
-            float(
-                usm_amount
-            )
-            * mask
-        )
 
-        result = np.clip(
-            sharpened,
-            0,
-            255,
-        ).astype(
-            np.uint8
-        )
+# ============================================================
+# MEDIAN
+# ============================================================
+
+def median_filter(image, kernel):
+    image = normalize_to_uint8(image)
+
+    kernel = int(kernel)
+
+    if kernel < 3:
+        kernel = 3
+
+    if kernel % 2 == 0:
+        kernel += 1
+
+    return cv2.medianBlur(
+        image,
+        kernel,
+    )
+
+
+# ============================================================
+# MEAN
+# ============================================================
+
+def mean_filter(image, radius):
+    image = normalize_to_uint8(image)
+
+    radius = int(radius)
+
+    if radius < 1:
+        return image.copy()
+
+    size = radius * 2 + 1
+
+    return cv2.blur(
+        image,
+        (size, size),
+    )
+
+
+# ============================================================
+# IMAGEJ UNSHARP MASK
+# ============================================================
+
+def imagej_unsharp_mask(
+    image,
+    sigma=1.0,
+    weight=0.6,
+):
+    """
+    ImageJ-style Unsharp Mask.
+
+    Conceptually:
+
+        blurred = Gaussian(image)
+        highpass = image - blurred
+        result = image + weight * highpass
+
+    ImageJ describes Radius (Sigma) as the Gaussian sigma
+    and Mask Weight as the strength of the high-pass component.
+    """
+    image = normalize_to_uint8(image)
+
+    original = image.astype(np.float32)
+
+    blurred = cv2.GaussianBlur(
+        original,
+        (0, 0),
+        sigmaX=float(sigma),
+        sigmaY=float(sigma),
+    )
+
+    highpass = original - blurred
+
+    result = original + float(weight) * highpass
+
+    result = np.clip(result, 0, 255)
+
+    return result.astype(np.uint8)
+
+
+# ============================================================
+# IMAGEJ SHARPEN
+# ============================================================
+
+def imagej_sharpen(image, strength=1.0):
+    """
+    ImageJ-style Sharpen operation.
+
+    ImageJ documents a 3x3 sharpening convolution:
+
+        -1 -1 -1
+        -1 12 -1
+        -1 -1 -1
+
+    The kernel is normalized here to produce a stable uint8 result.
+    """
+    image = normalize_to_uint8(image)
+
+    strength = float(strength)
+
+    base = np.array(
+        [
+            [-1, -1, -1],
+            [-1, 12, -1],
+            [-1, -1, -1],
+        ],
+        dtype=np.float32,
+    )
+
+    kernel = np.eye(3, dtype=np.float32)
+
+    kernel += (base - kernel) * strength
+
+    result = cv2.filter2D(
+        image.astype(np.float32),
+        -1,
+        kernel,
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+    return normalize_to_uint8(result)
+
+
+# ============================================================
+# SOBEL / FIND EDGES
+# ============================================================
+
+def sobel_edges(image, strength=1.0):
+    """
+    ImageJ-style Find Edges based on Sobel derivatives.
+    """
+    image = normalize_to_uint8(image)
+
+    img = image.astype(np.float32)
+
+    gx = cv2.Sobel(
+        img,
+        cv2.CV_32F,
+        1,
+        0,
+        ksize=3,
+    )
+
+    gy = cv2.Sobel(
+        img,
+        cv2.CV_32F,
+        0,
+        1,
+        ksize=3,
+    )
+
+    magnitude = cv2.magnitude(gx, gy)
+
+    magnitude *= float(strength)
+
+    return normalize_to_uint8(magnitude)
+
+
+# ============================================================
+# LAPLACIAN
+# ============================================================
+
+def laplacian_enhance(
+    image,
+    strength=0.5,
+):
+    """
+    Laplacian-based detail enhancement.
+    """
+    image = normalize_to_uint8(image)
+
+    img = image.astype(np.float32)
+
+    lap = cv2.Laplacian(
+        img,
+        cv2.CV_32F,
+        ksize=3,
+    )
+
+    result = img - float(strength) * lap
+
+    return normalize_to_uint8(result)
+
+
+# ============================================================
+# CONVOLUTION
+# ============================================================
+
+CONVOLUTION_KERNELS = {
+    "Identity": np.array(
+        [
+            [0, 0, 0],
+            [0, 1, 0],
+            [0, 0, 0],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Sharpen": np.array(
+        [
+            [0, -1, 0],
+            [-1, 5, -1],
+            [0, -1, 0],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Strong Sharpen": np.array(
+        [
+            [-1, -1, -1],
+            [-1, 9, -1],
+            [-1, -1, -1],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Edge Detection": np.array(
+        [
+            [-1, -1, -1],
+            [-1, 8, -1],
+            [-1, -1, -1],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Sobel X": np.array(
+        [
+            [-1, 0, 1],
+            [-2, 0, 2],
+            [-1, 0, 1],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Sobel Y": np.array(
+        [
+            [-1, -2, -1],
+            [0, 0, 0],
+            [1, 2, 1],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Laplacian": np.array(
+        [
+            [0, 1, 0],
+            [1, -4, 1],
+            [0, 1, 0],
+        ],
+        dtype=np.float32,
+    ),
+
+    "Emboss": np.array(
+        [
+            [-2, -1, 0],
+            [-1, 1, 1],
+            [0, 1, 2],
+        ],
+        dtype=np.float32,
+    ),
+}
+
+
+def convolve_image(image, kernel_name, strength=1.0):
+    image = normalize_to_uint8(image)
+
+    kernel = CONVOLUTION_KERNELS[kernel_name].copy()
+
+    identity = np.zeros((3, 3), dtype=np.float32)
+    identity[1, 1] = 1.0
+
+    kernel = identity + float(strength) * (kernel - identity)
+
+    result = cv2.filter2D(
+        image.astype(np.float32),
+        -1,
+        kernel,
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+    return normalize_to_uint8(result)
+
+
+# ============================================================
+# MINIMUM / MAXIMUM
+# ============================================================
+
+def minimum_filter(image, radius):
+    image = normalize_to_uint8(image)
+
+    radius = max(1, int(radius))
+
+    size = radius * 2 + 1
+
+    kernel = np.ones(
+        (size, size),
+        dtype=np.uint8,
+    )
+
+    return cv2.erode(
+        image,
+        kernel,
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+
+def maximum_filter(image, radius):
+    image = normalize_to_uint8(image)
+
+    radius = max(1, int(radius))
+
+    size = radius * 2 + 1
+
+    kernel = np.ones(
+        (size, size),
+        dtype=np.uint8,
+    )
+
+    return cv2.dilate(
+        image,
+        kernel,
+        borderType=cv2.BORDER_REPLICATE,
+    )
+
+
+# ============================================================
+# MORPHOLOGY
+# ============================================================
+
+def morphological_open(image, radius):
+    image = normalize_to_uint8(image)
+
+    radius = max(1, int(radius))
+
+    size = radius * 2 + 1
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (size, size),
+    )
+
+    return cv2.morphologyEx(
+        image,
+        cv2.MORPH_OPEN,
+        kernel,
+    )
+
+
+def morphological_close(image, radius):
+    image = normalize_to_uint8(image)
+
+    radius = max(1, int(radius))
+
+    size = radius * 2 + 1
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (size, size),
+    )
+
+    return cv2.morphologyEx(
+        image,
+        cv2.MORPH_CLOSE,
+        kernel,
+    )
+
+
+# ============================================================
+# BACKGROUND SUBTRACTION
+# ============================================================
+
+def subtract_background(
+    image,
+    radius=25,
+):
+    """
+    Rolling-ball-like background correction using morphological
+    opening. It is designed to provide the same type of operation
+    as ImageJ's Subtract Background command.
+    """
+    image = normalize_to_uint8(image)
+
+    radius = max(3, int(radius))
+
+    if radius % 2 == 0:
+        radius += 1
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (radius, radius),
+    )
+
+    background = cv2.morphologyEx(
+        image,
+        cv2.MORPH_OPEN,
+        kernel,
+    )
+
+    result = (
+        image.astype(np.float32)
+        - background.astype(np.float32)
+        + 128.0
+    )
+
+    return normalize_to_uint8(result)
+
+
+# ============================================================
+# GAMMA
+# ============================================================
+
+def gamma_correction(image, gamma):
+    image = normalize_to_uint8(image)
+
+    gamma = float(gamma)
+
+    if gamma <= 0:
+        gamma = 1.0
+
+    normalized = image.astype(np.float32) / 255.0
+
+    result = np.power(
+        normalized,
+        gamma,
+    )
+
+    return np.clip(
+        result * 255.0,
+        0,
+        255,
+    ).astype(np.uint8)
+
+
+# ============================================================
+# DENTAL PRESETS
+# ============================================================
+
+def dental_endo(image):
+    """
+    Endodontic preset.
+
+    CLAHE
+        ->
+    mild Gaussian smoothing
+        ->
+    ImageJ-style Unsharp Mask
+    """
+    result = imagej_clahe(
+        image,
+        block_size=80,
+        bins=256,
+        max_slope=2.5,
+    )
+
+    result = gaussian_blur(
+        result,
+        sigma=0.45,
+    )
+
+    result = imagej_unsharp_mask(
+        result,
+        sigma=0.9,
+        weight=1.8,
+    )
 
     return result
 
 
-# ============================================================
-# SESSION STATE
-# ============================================================
+def dental_perio(image):
+    """
+    Periodontal / bone preset.
 
-if "image" not in st.session_state:
+    Contrast enhancement
+        ->
+    CLAHE
+        ->
+    moderate Unsharp Mask
+    """
+    result = imagej_enhance_contrast(
+        image,
+        saturated=0.35,
+        normalize=True,
+    )
 
-    st.session_state.image = None
+    result = imagej_clahe(
+        result,
+        block_size=100,
+        bins=256,
+        max_slope=2.2,
+    )
 
-if "filename" not in st.session_state:
+    result = imagej_unsharp_mask(
+        result,
+        sigma=1.5,
+        weight=1.1,
+    )
 
-    st.session_state.filename = None
+    return result
 
-if "dicom" not in st.session_state:
 
-    st.session_state.dicom = None
+def dental_imagej_preset(image):
+    """
+    General-purpose ImageJ-style dental enhancement.
+    """
+    result = imagej_enhance_contrast(
+        image,
+        saturated=0.35,
+        normalize=True,
+    )
 
-if "spacing" not in st.session_state:
+    result = imagej_clahe(
+        result,
+        block_size=100,
+        bins=256,
+        max_slope=2.0,
+    )
 
-    st.session_state.spacing = None
+    result = imagej_unsharp_mask(
+        result,
+        sigma=1.0,
+        weight=0.8,
+    )
 
-if "calibration" not in st.session_state:
-
-    st.session_state.calibration = None
-
-if "file_signature" not in st.session_state:
-
-    st.session_state.file_signature = None
+    return result
 
 
 # ============================================================
@@ -584,810 +921,742 @@ if "file_signature" not in st.session_state:
 
 with st.sidebar:
 
-    st.header("📂 Image")
+    st.header("Image")
 
-    uploaded_file = st.file_uploader(
-        "Drag & drop dental image",
+    uploaded = st.file_uploader(
+        "Upload dental image",
         type=[
-            "dcm",
             "png",
             "jpg",
             "jpeg",
             "tif",
             "tiff",
-            "bmp",
+            "dcm",
+            "dicom",
+        ],
+        help="PNG, JPG, TIFF and DICOM are supported.",
+    )
+
+    st.divider()
+
+    st.header("Processing mode")
+
+    mode = st.selectbox(
+        "Choose operation",
+        [
+            "ImageJ Dental Preset",
+            "Endodontic Preset",
+            "Perio / Bone Preset",
+            "Enhance Contrast",
+            "Histogram Equalization",
+            "CLAHE",
+            "Gaussian Blur",
+            "Median Filter",
+            "Mean Filter",
+            "Unsharp Mask",
+            "ImageJ Sharpen",
+            "Find Edges / Sobel",
+            "Laplacian Enhancement",
+            "Convolve",
+            "Minimum",
+            "Maximum",
+            "Morphological Opening",
+            "Morphological Closing",
+            "Subtract Background",
+            "Gamma Correction",
         ],
     )
 
-    # --------------------------------------------------------
-    # LOAD IMAGE
-    # --------------------------------------------------------
-
-    if uploaded_file is not None:
-
-        file_signature = (
-            uploaded_file.name,
-            uploaded_file.size,
-        )
-
-        if (
-            st.session_state.file_signature
-            != file_signature
-        ):
-
-            try:
-
-                (
-                    image,
-                    dicom,
-                    spacing,
-                ) = load_image(
-                    uploaded_file
-                )
-
-                st.session_state.image = (
-                    image
-                )
-
-                st.session_state.filename = (
-                    uploaded_file.name
-                )
-
-                st.session_state.dicom = (
-                    dicom
-                )
-
-                st.session_state.spacing = (
-                    spacing
-                )
-
-                st.session_state.calibration = (
-                    None
-                )
-
-                st.session_state.file_signature = (
-                    file_signature
-                )
-
-                st.success(
-                    f"Loaded: "
-                    f"{uploaded_file.name}"
-                )
-
-            except Exception as error:
-
-                st.error(
-                    "Could not load image."
-                )
-
-                st.code(
-                    str(error)
-                )
-
-    # ========================================================
-    # PROCESSING
-    # ========================================================
-
-    if st.session_state.image is not None:
-
-        st.divider()
-
-        st.header("⚙️ Processing")
-
-        # ====================================================
-        # MEDIAN FILTER
-        # ====================================================
-
-        st.subheader(
-            "Median Filter"
-        )
-
-        use_median = st.checkbox(
-            "Enable Median Filter",
-            value=False,
-        )
-
-        median_kernel = st.selectbox(
-            "Median kernel",
-            [
-                3,
-                5,
-                7,
-                9,
-            ],
-            disabled=not use_median,
-        )
-
-        # ====================================================
-        # CLAHE
-        # ====================================================
-
-        st.subheader(
-            "CLAHE"
-        )
-
-        use_clahe = st.checkbox(
-            "Enable CLAHE",
-            value=True,
-        )
-
-        clip_limit = st.slider(
-            "CLAHE clip limit",
-            0.1,
-            10.0,
-            2.0,
-            0.1,
-            disabled=not use_clahe,
-        )
-
-        tile_size = st.slider(
-            "CLAHE tile size",
-            2,
-            32,
-            8,
-            1,
-            disabled=not use_clahe,
-        )
-
-        # ====================================================
-        # STANDARD SHARPENING
-        # ====================================================
-
-        st.subheader(
-            "Standard Sharpening"
-        )
-
-        use_sharpen = st.checkbox(
-            "Enable Standard Sharpening",
-            value=False,
-        )
-
-        sharpen_strength = st.slider(
-            "Sharpening strength",
-            0.0,
-            2.0,
-            1.0,
-            0.1,
-            disabled=not use_sharpen,
-        )
-
-        # ====================================================
-        # UNSHARP MASKING
-        # ====================================================
-
-        st.subheader(
-            "Unsharp Masking (USM)"
-        )
-
-        use_usm = st.checkbox(
-            "Enable USM",
-            value=False,
-        )
-
-        usm_sigma = st.slider(
-            "USM Gaussian sigma",
-            0.1,
-            5.0,
-            1.0,
-            0.1,
-            disabled=not use_usm,
-        )
-
-        usm_amount = st.slider(
-            "USM amount",
-            0.0,
-            5.0,
-            1.0,
-            0.1,
-            disabled=not use_usm,
-        )
-
-        usm_threshold = st.slider(
-            "USM threshold",
-            0,
-            50,
-            5,
-            1,
-            disabled=not use_usm,
-        )
-
-        # ====================================================
-        # MEASUREMENT
-        # ====================================================
-
-        st.divider()
-
-        st.header(
-            "📏 Measurement"
-        )
-
-        if st.session_state.spacing:
-
-            sx, sy = (
-                st.session_state.spacing
-            )
-
-            st.success(
-                f"Row spacing: "
-                f"{sx:.6f} mm/pixel\n\n"
-                f"Column spacing: "
-                f"{sy:.6f} mm/pixel"
-            )
-
-        else:
-
-            st.warning(
-                "No DICOM PixelSpacing detected."
-            )
-
-        st.subheader(
-            "Manual calibration"
-        )
-
-        known_distance = st.number_input(
-            "Reference distance (mm)",
-            min_value=0.001,
-            value=10.0,
-            step=0.5,
-        )
-
-        if st.button(
-            "Clear calibration"
-        ):
-
-            st.session_state.calibration = (
-                None
-            )
-
-            st.rerun()
+    st.divider()
 
 
 # ============================================================
-# STOP IF NO IMAGE
+# MAIN APPLICATION
 # ============================================================
 
-if st.session_state.image is None:
+if uploaded is None:
 
     st.info(
-        "👆 Upload a dental image using the sidebar."
+        "Upload a dental radiograph from the sidebar to begin."
+    )
+
+    st.markdown(
+        """
+        ### Supported processing
+
+        **Contrast**
+        - Enhance Contrast
+        - Histogram Equalization
+        - CLAHE
+
+        **Noise reduction**
+        - Gaussian Blur
+        - Median
+        - Mean
+
+        **Sharpening**
+        - ImageJ Unsharp Mask
+        - ImageJ Sharpen
+        - Laplacian enhancement
+
+        **Edges / convolution**
+        - Sobel / Find Edges
+        - Custom convolution kernels
+
+        **Morphology**
+        - Minimum
+        - Maximum
+        - Opening
+        - Closing
+
+        **Background**
+        - Rolling-ball-style background subtraction
+
+        **Dental presets**
+        - General ImageJ Dental
+        - Endodontic
+        - Perio / Bone
+        """
     )
 
     st.stop()
 
 
 # ============================================================
-# PROCESS
+# LOAD IMAGE
 # ============================================================
 
-original = (
-    st.session_state.image
-)
+try:
+    original = load_uploaded_image(uploaded)
 
-processed = process_image(
-    original,
+except Exception as exc:
 
-    # Median
-    use_median,
-    median_kernel,
-
-    # CLAHE
-    use_clahe,
-    clip_limit,
-    tile_size,
-
-    # Standard sharpening
-    use_sharpen,
-    sharpen_strength,
-
-    # USM
-    use_usm,
-    usm_sigma,
-    usm_amount,
-    usm_threshold,
-)
-
-
-# ============================================================
-# DISPLAY SCALING
-# ============================================================
-
-height, width = (
-    processed.shape[:2]
-)
-
-MAX_WIDTH = 1000
-
-if width > MAX_WIDTH:
-
-    scale = (
-        MAX_WIDTH
-        / float(width)
+    st.error(
+        f"Could not load the image: {exc}"
     )
 
-else:
-
-    scale = 1.0
-
-display_width = max(
-    1,
-    int(
-        round(
-            width * scale
-        )
-    ),
-)
-
-display_height = max(
-    1,
-    int(
-        round(
-            height * scale
-        )
-    ),
-)
+    st.stop()
 
 
-original_display = cv2.resize(
-    original,
-    (
-        display_width,
-        display_height,
-    ),
-    interpolation=cv2.INTER_AREA,
-)
-
-processed_display = cv2.resize(
-    processed,
-    (
-        display_width,
-        display_height,
-    ),
-    interpolation=cv2.INTER_AREA,
-)
+original = normalize_to_uint8(original)
 
 
 # ============================================================
-# TABS
+# MODE-SPECIFIC CONTROLS
 # ============================================================
 
-comparison_tab, measurement_tab, dicom_tab = (
-    st.tabs(
-        [
-            "🖼️ Image",
-            "📏 Measurement",
-            "🏥 DICOM",
-        ]
+with st.sidebar:
+
+    if mode == "ImageJ Dental Preset":
+
+        st.subheader("Dental preset")
+
+        st.caption(
+            "General-purpose ImageJ-style dental enhancement."
+        )
+
+        preset_strength = st.slider(
+            "Final sharpening",
+            0.0,
+            2.0,
+            0.8,
+            0.05,
+        )
+
+
+    elif mode == "Endodontic Preset":
+
+        st.subheader("Endodontic")
+
+        clahe_slope = st.slider(
+            "CLAHE maximum slope",
+            1.0,
+            5.0,
+            2.5,
+            0.1,
+        )
+
+        usm_sigma = st.slider(
+            "Unsharp Sigma",
+            0.3,
+            2.0,
+            0.9,
+            0.05,
+        )
+
+        usm_weight = st.slider(
+            "Unsharp weight",
+            0.0,
+            3.0,
+            1.8,
+            0.05,
+        )
+
+
+    elif mode == "Perio / Bone Preset":
+
+        st.subheader("Perio / Bone")
+
+        contrast = st.slider(
+            "Saturated pixels (%)",
+            0.05,
+            2.0,
+            0.35,
+            0.05,
+        )
+
+        usm_sigma = st.slider(
+            "Unsharp Sigma",
+            0.5,
+            3.0,
+            1.5,
+            0.05,
+        )
+
+        usm_weight = st.slider(
+            "Unsharp weight",
+            0.0,
+            2.5,
+            1.1,
+            0.05,
+        )
+
+
+    elif mode == "Enhance Contrast":
+
+        st.subheader("ImageJ Enhance Contrast")
+
+        saturated = st.slider(
+            "Saturated pixels (%)",
+            0.01,
+            5.0,
+            0.35,
+            0.01,
+        )
+
+        normalize = st.checkbox(
+            "Normalize",
+            value=True,
+        )
+
+
+    elif mode == "Histogram Equalization":
+
+        st.subheader("Histogram")
+
+        st.caption(
+            "Global histogram equalization."
+        )
+
+
+    elif mode == "CLAHE":
+
+        st.subheader("ImageJ-style CLAHE")
+
+        block_size = st.slider(
+            "Block size",
+            16,
+            256,
+            100,
+            1,
+        )
+
+        bins = st.select_slider(
+            "Histogram bins",
+            options=[64, 128, 256],
+            value=256,
+        )
+
+        max_slope = st.slider(
+            "Maximum slope",
+            1.0,
+            8.0,
+            2.5,
+            0.1,
+        )
+
+
+    elif mode == "Gaussian Blur":
+
+        st.subheader("Gaussian Blur")
+
+        sigma = st.slider(
+            "Sigma",
+            0.1,
+            10.0,
+            1.0,
+            0.1,
+        )
+
+
+    elif mode == "Median Filter":
+
+        st.subheader("Median Filter")
+
+        kernel = st.select_slider(
+            "Kernel size",
+            options=[3, 5, 7, 9, 11],
+            value=3,
+        )
+
+
+    elif mode == "Mean Filter":
+
+        st.subheader("Mean Filter")
+
+        radius = st.slider(
+            "Radius",
+            1,
+            10,
+            1,
+        )
+
+
+    elif mode == "Unsharp Mask":
+
+        st.subheader("ImageJ Unsharp Mask")
+
+        sigma = st.slider(
+            "Radius / Sigma",
+            0.1,
+            5.0,
+            1.0,
+            0.05,
+        )
+
+        weight = st.slider(
+            "Mask weight",
+            0.0,
+            5.0,
+            0.6,
+            0.05,
+        )
+
+
+    elif mode == "ImageJ Sharpen":
+
+        st.subheader("ImageJ Sharpen")
+
+        strength = st.slider(
+            "Sharpen strength",
+            0.0,
+            2.0,
+            1.0,
+            0.05,
+        )
+
+
+    elif mode == "Find Edges / Sobel":
+
+        st.subheader("Sobel")
+
+        strength = st.slider(
+            "Edge strength",
+            0.1,
+            3.0,
+            1.0,
+            0.05,
+        )
+
+
+    elif mode == "Laplacian Enhancement":
+
+        st.subheader("Laplacian")
+
+        strength = st.slider(
+            "Strength",
+            0.0,
+            2.0,
+            0.5,
+            0.05,
+        )
+
+
+    elif mode == "Convolve":
+
+        st.subheader("Convolution")
+
+        kernel_name = st.selectbox(
+            "Kernel",
+            list(CONVOLUTION_KERNELS.keys()),
+        )
+
+        strength = st.slider(
+            "Kernel strength",
+            0.0,
+            2.0,
+            1.0,
+            0.05,
+        )
+
+
+    elif mode == "Minimum":
+
+        st.subheader("Minimum")
+
+        radius = st.slider(
+            "Radius",
+            1,
+            10,
+            1,
+        )
+
+
+    elif mode == "Maximum":
+
+        st.subheader("Maximum")
+
+        radius = st.slider(
+            "Radius",
+            1,
+            10,
+            1,
+        )
+
+
+    elif mode == "Morphological Opening":
+
+        st.subheader("Opening")
+
+        radius = st.slider(
+            "Radius",
+            1,
+            10,
+            2,
+        )
+
+
+    elif mode == "Morphological Closing":
+
+        st.subheader("Closing")
+
+        radius = st.slider(
+            "Radius",
+            1,
+            10,
+            2,
+        )
+
+
+    elif mode == "Subtract Background":
+
+        st.subheader("Background subtraction")
+
+        background_radius = st.slider(
+            "Background radius",
+            5,
+            150,
+            25,
+            1,
+        )
+
+
+    elif mode == "Gamma Correction":
+
+        st.subheader("Gamma")
+
+        gamma = st.slider(
+            "Gamma",
+            0.2,
+            3.0,
+            1.0,
+            0.05,
+        )
+
+
+# ============================================================
+# PROCESS IMAGE
+# ============================================================
+
+processed = original.copy()
+
+
+if mode == "ImageJ Dental Preset":
+
+    processed = imagej_enhance_contrast(
+        processed,
+        saturated=0.35,
+        normalize=True,
     )
-)
 
-
-# ============================================================
-# IMAGE TAB
-# ============================================================
-
-with comparison_tab:
-
-    left, right = st.columns(
-        2
+    processed = imagej_clahe(
+        processed,
+        block_size=100,
+        bins=256,
+        max_slope=2.0,
     )
 
-    with left:
-
-        st.subheader(
-            "Original"
-        )
-
-        # IMPORTANT:
-        # Use use_container_width=True.
-        #
-        # Do NOT use:
-        #
-        # width="stretch"
-        #
-        # because older Streamlit versions in
-        # Playground can produce:
-        #
-        # TypeError:
-        # '<=' not supported between
-        # instances of 'str' and 'int'
-
-        st.image(
-            original_display,
-            use_container_width=True,
-        )
-
-    with right:
-
-        st.subheader(
-            "Processed"
-        )
-
-        st.image(
-            processed_display,
-            use_container_width=True,
-        )
-
-    # --------------------------------------------------------
-    # Processing summary
-    # --------------------------------------------------------
-
-    st.divider()
-
-    st.subheader(
-        "Current processing"
+    processed = imagej_unsharp_mask(
+        processed,
+        sigma=1.0,
+        weight=preset_strength,
     )
 
-    active_processing = []
 
-    if use_median:
+elif mode == "Endodontic Preset":
 
-        active_processing.append(
-            f"Median {median_kernel}×{median_kernel}"
-        )
+    processed = imagej_clahe(
+        processed,
+        block_size=80,
+        bins=256,
+        max_slope=clahe_slope,
+    )
 
-    if use_clahe:
+    processed = gaussian_blur(
+        processed,
+        sigma=0.45,
+    )
 
-        active_processing.append(
-            "CLAHE"
-        )
+    processed = imagej_unsharp_mask(
+        processed,
+        sigma=usm_sigma,
+        weight=usm_weight,
+    )
 
-    if use_sharpen:
 
-        active_processing.append(
-            "Standard Sharpening"
-        )
+elif mode == "Perio / Bone Preset":
 
-    if use_usm:
+    processed = imagej_enhance_contrast(
+        processed,
+        saturated=contrast,
+        normalize=True,
+    )
 
-        active_processing.append(
-            "Unsharp Masking (USM)"
-        )
+    processed = imagej_clahe(
+        processed,
+        block_size=100,
+        bins=256,
+        max_slope=2.2,
+    )
 
-    if len(
-        active_processing
-    ) == 0:
+    processed = imagej_unsharp_mask(
+        processed,
+        sigma=usm_sigma,
+        weight=usm_weight,
+    )
 
-        st.info(
-            "No processing is enabled."
-        )
 
-    else:
+elif mode == "Enhance Contrast":
 
-        st.write(
-            " → ".join(
-                active_processing
-            )
-        )
+    processed = imagej_enhance_contrast(
+        processed,
+        saturated=saturated,
+        normalize=normalize,
+    )
 
-    # --------------------------------------------------------
-    # Download
-    # --------------------------------------------------------
 
-    output = io.BytesIO()
+elif mode == "Histogram Equalization":
 
-    Image.fromarray(
+    processed = histogram_equalization(
         processed
-    ).save(
-        output,
-        format="PNG",
     )
 
-    st.download_button(
-        "⬇️ Download processed image",
-        output.getvalue(),
-        file_name=(
-            f"{Path(st.session_state.filename).stem}"
-            "_processed.png"
-        ),
-        mime="image/png",
+
+elif mode == "CLAHE":
+
+    processed = imagej_clahe(
+        processed,
+        block_size=block_size,
+        bins=bins,
+        max_slope=max_slope,
+    )
+
+
+elif mode == "Gaussian Blur":
+
+    processed = gaussian_blur(
+        processed,
+        sigma=sigma,
+    )
+
+
+elif mode == "Median Filter":
+
+    processed = median_filter(
+        processed,
+        kernel=kernel,
+    )
+
+
+elif mode == "Mean Filter":
+
+    processed = mean_filter(
+        processed,
+        radius=radius,
+    )
+
+
+elif mode == "Unsharp Mask":
+
+    processed = imagej_unsharp_mask(
+        processed,
+        sigma=sigma,
+        weight=weight,
+    )
+
+
+elif mode == "ImageJ Sharpen":
+
+    processed = imagej_sharpen(
+        processed,
+        strength=strength,
+    )
+
+
+elif mode == "Find Edges / Sobel":
+
+    processed = sobel_edges(
+        processed,
+        strength=strength,
+    )
+
+
+elif mode == "Laplacian Enhancement":
+
+    processed = laplacian_enhance(
+        processed,
+        strength=strength,
+    )
+
+
+elif mode == "Convolve":
+
+    processed = convolve_image(
+        processed,
+        kernel_name=kernel_name,
+        strength=strength,
+    )
+
+
+elif mode == "Minimum":
+
+    processed = minimum_filter(
+        processed,
+        radius=radius,
+    )
+
+
+elif mode == "Maximum":
+
+    processed = maximum_filter(
+        processed,
+        radius=radius,
+    )
+
+
+elif mode == "Morphological Opening":
+
+    processed = morphological_open(
+        processed,
+        radius=radius,
+    )
+
+
+elif mode == "Morphological Closing":
+
+    processed = morphological_close(
+        processed,
+        radius=radius,
+    )
+
+
+elif mode == "Subtract Background":
+
+    processed = subtract_background(
+        processed,
+        radius=background_radius,
+    )
+
+
+elif mode == "Gamma Correction":
+
+    processed = gamma_correction(
+        processed,
+        gamma=gamma,
     )
 
 
 # ============================================================
-# MEASUREMENT TAB
+# DISPLAY
 # ============================================================
 
-with measurement_tab:
+display_original = resize_for_display(original)
+display_processed = resize_for_display(processed)
 
-    st.subheader(
-        "📏 Point-to-point measurement"
+st.subheader(mode)
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    st.markdown("### Original")
+
+    st.image(
+        display_original,
+        use_container_width=True,
+        clamp=True,
     )
 
-    st.write(
-        "Draw a line between two points on the image."
+
+with col2:
+
+    st.markdown("### Processed")
+
+    st.image(
+        display_processed,
+        use_container_width=True,
+        clamp=True,
     )
-
-    canvas = st_canvas(
-        fill_color=(
-            "rgba(255, 0, 0, 0.1)"
-        ),
-        stroke_width=3,
-        stroke_color="#ff0000",
-        background_image=Image.fromarray(
-            processed_display
-        ),
-        drawing_mode="line",
-        height=int(
-            display_height
-        ),
-        width=int(
-            display_width
-        ),
-        update_streamlit=True,
-        key="measurement_canvas",
-    )
-
-    # --------------------------------------------------------
-    # Measurement
-    # --------------------------------------------------------
-
-    if canvas.json_data is not None:
-
-        objects = (
-            canvas.json_data.get(
-                "objects",
-                [],
-            )
-        )
-
-        if len(objects) > 0:
-
-            line = objects[-1]
-
-            # Fabric.js coordinates
-            x1 = float(
-                line.get(
-                    "x1",
-                    0,
-                )
-            )
-
-            y1 = float(
-                line.get(
-                    "y1",
-                    0,
-                )
-            )
-
-            x2 = float(
-                line.get(
-                    "x2",
-                    0,
-                )
-            )
-
-            y2 = float(
-                line.get(
-                    "y2",
-                    0,
-                )
-            )
-
-            scale_x = float(
-                line.get(
-                    "scaleX",
-                    1,
-                )
-            )
-
-            scale_y = float(
-                line.get(
-                    "scaleY",
-                    1,
-                )
-            )
-
-            dx_display = (
-                (x2 - x1)
-                * scale_x
-            )
-
-            dy_display = (
-                (y2 - y1)
-                * scale_y
-            )
-
-            display_distance = math.sqrt(
-                dx_display ** 2
-                +
-                dy_display ** 2
-            )
-
-            # ------------------------------------------------
-            # Convert display pixels to source pixels
-            # ------------------------------------------------
-
-            if scale > 0:
-
-                source_distance = (
-                    display_distance
-                    / scale
-                )
-
-            else:
-
-                source_distance = 0.0
-
-            st.metric(
-                "Distance",
-                f"{source_distance:.2f} pixels",
-            )
-
-            # ------------------------------------------------
-            # DICOM physical distance
-            # ------------------------------------------------
-
-            if st.session_state.spacing:
-
-                sx, sy = (
-                    st.session_state.spacing
-                )
-
-                dx = (
-                    dx_display
-                    / scale
-                )
-
-                dy = (
-                    dy_display
-                    / scale
-                )
-
-                # x corresponds to columns
-                # and therefore column spacing = sy
-                #
-                # y corresponds to rows
-                # and therefore row spacing = sx
-
-                distance_mm = math.sqrt(
-                    (dx * sy) ** 2
-                    +
-                    (dy * sx) ** 2
-                )
-
-                st.metric(
-                    "Physical distance",
-                    f"{distance_mm:.3f} mm",
-                )
-
-            # ------------------------------------------------
-            # Manual calibration
-            # ------------------------------------------------
-
-            elif (
-                st.session_state.calibration
-            ):
-
-                mm_per_pixel = float(
-                    st.session_state.calibration
-                )
-
-                distance_mm = (
-                    source_distance
-                    *
-                    mm_per_pixel
-                )
-
-                st.metric(
-                    "Calibrated distance",
-                    f"{distance_mm:.3f} mm",
-                )
-
-            # ------------------------------------------------
-            # Calibration
-            # ------------------------------------------------
-
-            st.divider()
-
-            st.subheader(
-                "Calibration"
-            )
-
-            st.write(
-                "For a non-DICOM image, draw the line "
-                "over an object with a known physical length."
-            )
-
-            if st.button(
-                "Set calibration from this line"
-            ):
-
-                if source_distance > 0:
-
-                    mm_per_pixel = (
-                        float(
-                            known_distance
-                        )
-                        /
-                        float(
-                            source_distance
-                        )
-                    )
-
-                    st.session_state.calibration = (
-                        mm_per_pixel
-                    )
-
-                    st.success(
-                        "Calibration: "
-                        f"{mm_per_pixel:.8f} mm/pixel"
-                    )
-
-                    st.rerun()
-
-                else:
-
-                    st.warning(
-                        "Please draw a valid line first."
-                    )
 
 
 # ============================================================
-# DICOM TAB
+# IMAGE INFORMATION
 # ============================================================
 
-with dicom_tab:
+st.divider()
 
-    st.subheader(
-        "🏥 DICOM metadata"
+info1, info2, info3 = st.columns(3)
+
+with info1:
+    st.metric(
+        "Width",
+        f"{original.shape[1]} px",
     )
 
-    ds = (
-        st.session_state.dicom
+with info2:
+    st.metric(
+        "Height",
+        f"{original.shape[0]} px",
     )
 
-    if ds is None:
+with info3:
+    st.metric(
+        "Operation",
+        mode,
+    )
 
-        st.info(
-            "The uploaded image is not a DICOM file."
-        )
 
-    else:
+# ============================================================
+# DOWNLOAD
+# ============================================================
 
-        fields = [
-            "PatientID",
-            "StudyDate",
-            "Modality",
-            "Rows",
-            "Columns",
-            "BitsAllocated",
-            "BitsStored",
-            "HighBit",
-            "PixelRepresentation",
-            "PhotometricInterpretation",
-            "PixelSpacing",
-            "SliceThickness",
-            "WindowCenter",
-            "WindowWidth",
-            "RescaleSlope",
-            "RescaleIntercept",
-            "SamplesPerPixel",
-            "PlanarConfiguration",
-            "NumberOfFrames",
-        ]
+st.divider()
 
-        metadata = {}
+st.subheader("Export")
 
-        for field in fields:
+png_bytes = image_to_png_bytes(processed)
 
-            if hasattr(
-                ds,
-                field,
-            ):
+base_name = Path(uploaded.name).stem
 
-                metadata[field] = str(
-                    getattr(
-                        ds,
-                        field,
-                    )
-                )
+st.download_button(
+    label="⬇️ Download processed PNG",
+    data=png_bytes,
+    file_name=f"{base_name}_{mode.lower().replace(' ', '_').replace('/', '-')}.png",
+    mime="image/png",
+)
 
-        st.json(
-            metadata
-        )
 
-        st.warning(
-            "Original DICOM pixel data is not "
-            "overwritten. Processing is applied "
-            "to a derived image."
-        )
+st.caption(
+    "Processing is performed on the original image resolution. "
+    "The displayed images may be resized only for browser viewing."
+)

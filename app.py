@@ -12,6 +12,12 @@ try:
 except ImportError:
     DICOM_AVAILABLE = False
 
+try:
+    from skimage.restoration import denoise_tv_chambolle
+    SKIMAGE_AVAILABLE = True
+except ImportError:
+    SKIMAGE_AVAILABLE = False
+
 
 # ============================================================
 # PAGE CONFIG
@@ -33,66 +39,119 @@ st.markdown(
     """
     <style>
 
+    /* ---------- Main page ---------- */
+
     .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
+        padding-top: 2.2rem !important;
+        padding-bottom: 2rem !important;
         max-width: 1500px;
+        overflow: visible !important;
+    }
+
+
+    /* ---------- App title ---------- */
+
+    .app-header {
+        width: 100%;
+        overflow: visible !important;
+        margin-bottom: 1.4rem;
     }
 
     .app-title {
-        font-size: 2.4rem;
+        font-size: 2.35rem;
         font-weight: 700;
-        margin-bottom: 0.1rem;
+        line-height: 1.35;
+        padding-top: 0.15rem;
+        padding-bottom: 0.1rem;
+        margin: 0;
+        overflow: visible !important;
+        white-space: normal !important;
+        word-break: normal !important;
     }
 
     .app-subtitle {
-        font-size: 1.15rem;
+        font-size: 1.12rem;
+        line-height: 1.4;
         color: #666;
-        margin-bottom: 0.1rem;
+        margin-top: 0.15rem;
+        margin-bottom: 0.15rem;
     }
 
     .app-author {
-        font-size: 0.9rem;
+        font-size: 0.88rem;
+        line-height: 1.4;
         color: #888;
-        margin-bottom: 1.5rem;
+        margin-top: 0.05rem;
     }
+
+
+    /* ---------- Operation title ---------- */
 
     .operation-title {
         font-size: 1.35rem;
         font-weight: 600;
+        line-height: 1.35;
+        margin-top: 0.2rem;
         margin-bottom: 0.8rem;
         white-space: normal !important;
+        overflow: visible !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
     }
 
+
+    /* ---------- Information boxes ---------- */
+
     .info-box {
-        padding: 0.7rem 0.9rem;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 76px;
+        padding: 0.75rem 1rem;
         border-radius: 10px;
         background: rgba(120, 120, 120, 0.08);
-        min-height: 70px;
+        overflow: hidden;
     }
 
     .info-label {
         font-size: 0.82rem;
+        line-height: 1.3;
         color: #777;
-        margin-bottom: 0.15rem;
+        margin-bottom: 0.3rem;
     }
 
     .info-value {
-        font-size: 1.05rem;
+        font-size: 1.08rem;
         font-weight: 600;
+        line-height: 1.35;
         white-space: normal !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
+        margin: 0;
     }
+
+
+    /* ---------- Images ---------- */
 
     div[data-testid="stImage"] img {
         border-radius: 6px;
     }
 
+
+    /* ---------- Download ---------- */
+
     .stDownloadButton button {
         width: 100%;
+    }
+
+
+    /* ---------- Prevent clipping ---------- */
+
+    header[data-testid="stHeader"] {
+        overflow: visible !important;
+    }
+
+    section.main {
+        overflow: visible !important;
     }
 
     </style>
@@ -102,25 +161,25 @@ st.markdown(
 
 
 # ============================================================
-# APP HEADER
+# HEADER
 # ============================================================
 
 st.markdown(
-    '<div class="app-title">🦷 Dental Image Processor</div>',
-    unsafe_allow_html=True,
-)
+    """
+    <div class="app-header">
+        <div class="app-title">
+            🦷 Dental Image Processor
+        </div>
 
-st.markdown(
-    '<div class="app-subtitle">'
-    'Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών'
-    '</div>',
-    unsafe_allow_html=True,
-)
+        <div class="app-subtitle">
+            Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών
+        </div>
 
-st.markdown(
-    '<div class="app-author">'
-    'created by Tasos Dimitrakopoulos 2026'
-    '</div>',
+        <div class="app-author">
+            created by Tasos Dimitrakopoulos 2026
+        </div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -131,7 +190,8 @@ st.markdown(
 
 def normalize_to_uint8(image):
     """
-    Convert an image of arbitrary numeric depth to uint8.
+    Convert arbitrary numeric image data to uint8.
+    Uses robust percentile normalization for higher bit depths.
     """
     image = np.asarray(image)
 
@@ -143,25 +203,50 @@ def normalize_to_uint8(image):
     finite = np.isfinite(image)
 
     if not np.any(finite):
-        return np.zeros(image.shape, dtype=np.uint8)
+        return np.zeros(
+            image.shape,
+            dtype=np.uint8,
+        )
 
     valid = image[finite]
 
-    low = np.percentile(valid, 0.5)
-    high = np.percentile(valid, 99.5)
+    low = np.percentile(
+        valid,
+        0.5,
+    )
+
+    high = np.percentile(
+        valid,
+        99.5,
+    )
 
     if high <= low:
         low = float(valid.min())
         high = float(valid.max())
 
     if high <= low:
-        return np.zeros(image.shape, dtype=np.uint8)
+        return np.zeros(
+            image.shape,
+            dtype=np.uint8,
+        )
 
-    image = (image - low) / (high - low)
+    image = (
+        image - low
+    ) / (
+        high - low
+    )
 
-    image = np.clip(image, 0, 1)
+    image = np.clip(
+        image,
+        0,
+        1,
+    )
 
-    return (image * 255).astype(np.uint8)
+    return (
+        image * 255
+    ).astype(
+        np.uint8
+    )
 
 
 def ensure_gray(image):
@@ -189,16 +274,20 @@ def ensure_gray(image):
             cv2.COLOR_RGB2GRAY,
         )
 
-    raise ValueError("Unsupported image dimensions.")
+    raise ValueError(
+        "Unsupported image dimensions."
+    )
 
 
 def prepare_image(image):
     """
-    Prepare an uploaded image for processing.
+    Prepare uploaded image for processing.
     """
     image = ensure_gray(image)
 
-    return normalize_to_uint8(image)
+    return normalize_to_uint8(
+        image
+    )
 
 
 def resize_for_display(
@@ -221,21 +310,31 @@ def resize_for_display(
     if scale >= 1:
         return image
 
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    new_w = int(
+        w * scale
+    )
+
+    new_h = int(
+        h * scale
+    )
 
     return cv2.resize(
         image,
-        (new_w, new_h),
+        (
+            new_w,
+            new_h,
+        ),
         interpolation=cv2.INTER_AREA,
     )
 
 
 def image_to_png_bytes(image):
     """
-    Convert processed image to PNG bytes.
+    Convert image to PNG bytes.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
     success, encoded = cv2.imencode(
         ".png",
@@ -256,7 +355,7 @@ def image_to_png_bytes(image):
 
 def load_dicom(file_bytes):
     """
-    Load a DICOM image and apply common modality transformations.
+    Load DICOM image and apply common modality transformations.
     """
     if not DICOM_AVAILABLE:
         raise RuntimeError(
@@ -288,7 +387,10 @@ def load_dicom(file_bytes):
         )
     )
 
-    pixels = pixels * slope + intercept
+    pixels = (
+        pixels * slope
+        + intercept
+    )
 
     photometric = str(
         getattr(
@@ -299,7 +401,10 @@ def load_dicom(file_bytes):
     ).upper()
 
     if photometric == "MONOCHROME1":
-        pixels = np.max(pixels) - pixels
+        pixels = (
+            np.max(pixels)
+            - pixels
+        )
 
     window_center = getattr(
         ds,
@@ -317,6 +422,7 @@ def load_dicom(file_bytes):
         window_center is not None
         and window_width is not None
     ):
+
         try:
 
             if isinstance(
@@ -370,7 +476,7 @@ def load_dicom(file_bytes):
 
 
 def load_uploaded_image(
-    uploaded_file
+    uploaded_file,
 ):
     """
     Load PNG, JPG, JPEG, TIFF or DICOM.
@@ -385,7 +491,9 @@ def load_uploaded_image(
         ".dcm",
         ".dicom",
     ]:
-        return load_dicom(data)
+        return load_dicom(
+            data
+        )
 
     try:
 
@@ -393,23 +501,29 @@ def load_uploaded_image(
             io.BytesIO(data)
         )
 
-        array = np.array(pil)
+        array = np.array(
+            pil
+        )
 
-        return prepare_image(array)
+        return prepare_image(
+            array
+        )
 
     except Exception:
 
         if DICOM_AVAILABLE:
 
             try:
-                return load_dicom(data)
+                return load_dicom(
+                    data
+                )
 
             except Exception:
                 pass
 
         raise ValueError(
-            "Could not read this file as "
-            "an image or DICOM."
+            "Could not read this file "
+            "as an image or DICOM."
         )
 
 
@@ -463,10 +577,12 @@ def enhance_contrast(
 
 
 def histogram_equalization(
-    image
+    image,
 ):
     return cv2.equalizeHist(
-        normalize_to_uint8(image)
+        normalize_to_uint8(
+            image
+        )
     )
 
 
@@ -491,16 +607,20 @@ def apply_clahe(
 
     tile_x = max(
         2,
-        int(round(
-            w / block_size
-        )),
+        int(
+            round(
+                w / block_size
+            )
+        ),
     )
 
     tile_y = max(
         2,
-        int(round(
-            h / block_size
-        )),
+        int(
+            round(
+                h / block_size
+            )
+        ),
     )
 
     tile_x = min(
@@ -543,7 +663,9 @@ def gaussian_blur(
         image
     )
 
-    sigma = float(sigma)
+    sigma = float(
+        sigma
+    )
 
     if sigma <= 0:
         return image.copy()
@@ -568,7 +690,9 @@ def median_filter(
         image
     )
 
-    kernel = int(kernel)
+    kernel = int(
+        kernel
+    )
 
     if kernel < 3:
         kernel = 3
@@ -599,7 +723,10 @@ def mean_filter(
         int(radius),
     )
 
-    size = radius * 2 + 1
+    size = (
+        radius * 2
+        + 1
+    )
 
     return cv2.blur(
         image,
@@ -633,17 +760,23 @@ def unsharp_mask(
     blurred = cv2.GaussianBlur(
         original,
         (0, 0),
-        sigmaX=float(sigma),
-        sigmaY=float(sigma),
+        sigmaX=float(
+            sigma
+        ),
+        sigmaY=float(
+            sigma
+        ),
     )
 
     highpass = (
-        original - blurred
+        original
+        - blurred
     )
 
     result = (
         original
-        + float(weight) * highpass
+        + float(weight)
+        * highpass
     )
 
     result = np.clip(
@@ -686,7 +819,10 @@ def sharpen(
     )
 
     identity = np.zeros(
-        (3, 3),
+        (
+            3,
+            3,
+        ),
         dtype=np.float32,
     )
 
@@ -695,7 +831,10 @@ def sharpen(
     kernel = (
         identity
         + strength
-        * (base_kernel - identity)
+        * (
+            base_kernel
+            - identity
+        )
     )
 
     result = cv2.filter2D(
@@ -713,7 +852,7 @@ def sharpen(
 
 
 # ============================================================
-# SOBEL
+# SOBEL / FIND EDGES
 # ============================================================
 
 def sobel_edges(
@@ -788,7 +927,8 @@ def laplacian_enhancement(
 
     result = (
         img
-        - float(strength) * lap
+        - float(strength)
+        * lap
     )
 
     return normalize_to_uint8(
@@ -892,7 +1032,10 @@ def convolve_image(
     )
 
     identity = np.zeros(
-        (3, 3),
+        (
+            3,
+            3,
+        ),
         dtype=np.float32,
     )
 
@@ -901,7 +1044,10 @@ def convolve_image(
     kernel = (
         identity
         + float(strength)
-        * (kernel - identity)
+        * (
+            kernel
+            - identity
+        )
     )
 
     result = cv2.filter2D(
@@ -935,7 +1081,10 @@ def minimum_filter(
         int(radius),
     )
 
-    size = radius * 2 + 1
+    size = (
+        radius * 2
+        + 1
+    )
 
     kernel = np.ones(
         (
@@ -965,7 +1114,10 @@ def maximum_filter(
         int(radius),
     )
 
-    size = radius * 2 + 1
+    size = (
+        radius * 2
+        + 1
+    )
 
     kernel = np.ones(
         (
@@ -983,7 +1135,7 @@ def maximum_filter(
 
 
 # ============================================================
-# MORPHOLOGY
+# MORPHOLOGICAL OPENING
 # ============================================================
 
 def morphological_opening(
@@ -999,7 +1151,10 @@ def morphological_opening(
         int(radius),
     )
 
-    size = radius * 2 + 1
+    size = (
+        radius * 2
+        + 1
+    )
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
@@ -1016,6 +1171,10 @@ def morphological_opening(
     )
 
 
+# ============================================================
+# MORPHOLOGICAL CLOSING
+# ============================================================
+
 def morphological_closing(
     image,
     radius,
@@ -1029,7 +1188,10 @@ def morphological_closing(
         int(radius),
     )
 
-    size = radius * 2 + 1
+    size = (
+        radius * 2
+        + 1
+    )
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
@@ -1110,7 +1272,9 @@ def gamma_correction(
         image
     )
 
-    gamma = float(gamma)
+    gamma = float(
+        gamma
+    )
 
     if gamma <= 0:
         gamma = 1.0
@@ -1134,6 +1298,163 @@ def gamma_correction(
     ).astype(
         np.uint8
     )
+
+
+# ============================================================
+# TV-CLAHE / ENDO SHARP
+# ============================================================
+
+def spatial_normalization(
+    image,
+    sigma=50.0,
+    intensity_floor=5.0,
+):
+    """
+    Spatial intensity normalization.
+
+    A broad Gaussian field is estimated and used to reduce
+    large-scale intensity variation while protecting the
+    lower intensity range.
+    """
+    image = normalize_to_uint8(
+        image
+    )
+
+    img = image.astype(
+        np.float32
+    )
+
+    smooth = cv2.GaussianBlur(
+        img,
+        (0, 0),
+        sigmaX=sigma,
+        sigmaY=sigma,
+    )
+
+    floor = float(
+        intensity_floor
+    )
+
+    denominator = np.maximum(
+        smooth,
+        floor,
+    )
+
+    mean_value = float(
+        np.mean(denominator)
+    )
+
+    normalized = (
+        img
+        / denominator
+        * mean_value
+    )
+
+    return np.clip(
+        normalized,
+        0,
+        255,
+    ).astype(
+        np.uint8
+    )
+
+
+def tv_clahe_endo_sharp(
+    image,
+):
+    """
+    Endo Sharp enhancement.
+
+    Pipeline:
+
+        CLAHE
+            ->
+        Spatial normalization
+            ->
+        Mild TV denoising
+            ->
+        CLAHE
+            ->
+        Mild sharpening
+
+    The TV step is deliberately mild to preserve
+    fine dental anatomy and avoid excessive smoothing.
+    """
+
+    if not SKIMAGE_AVAILABLE:
+        raise RuntimeError(
+            "scikit-image is required for Endo Sharp. "
+            "Add scikit-image to requirements.txt."
+        )
+
+    # --------------------------------------------------------
+    # First CLAHE
+    # --------------------------------------------------------
+
+    result = apply_clahe(
+        image,
+        block_size=80,
+        bins=256,
+        max_slope=1.5,
+    )
+
+    # --------------------------------------------------------
+    # Spatial normalization
+    # --------------------------------------------------------
+
+    result = spatial_normalization(
+        result,
+        sigma=50.0,
+        intensity_floor=5.0,
+    )
+
+    # --------------------------------------------------------
+    # Mild TV denoising
+    # --------------------------------------------------------
+
+    normalized = (
+        result.astype(
+            np.float32
+        )
+        / 255.0
+    )
+
+    tv_result = denoise_tv_chambolle(
+        normalized,
+        weight=0.10,
+        channel_axis=None,
+    )
+
+    result = np.clip(
+        tv_result * 255.0,
+        0,
+        255,
+    ).astype(
+        np.uint8
+    )
+
+    # --------------------------------------------------------
+    # Second CLAHE
+    # --------------------------------------------------------
+
+    result = apply_clahe(
+        result,
+        block_size=80,
+        bins=256,
+        max_slope=1.5,
+    )
+
+    # --------------------------------------------------------
+    # Mild final sharpening
+    # --------------------------------------------------------
+
+    result = unsharp_mask(
+        result,
+        sigma=0.9,
+        weight=0.65,
+    )
+
+    return result
 
 
 # ============================================================
@@ -1255,7 +1576,9 @@ with st.sidebar:
 
     st.divider()
 
-    st.header("Processing mode")
+    st.header(
+        "Processing mode"
+    )
 
     mode = st.selectbox(
         "Choose operation",
@@ -1266,6 +1589,7 @@ with st.sidebar:
             "Enhance Contrast",
             "Histogram Equalization",
             "CLAHE",
+            "Endo Sharp",
             "Gaussian Blur",
             "Median Filter",
             "Mean Filter",
@@ -1305,6 +1629,7 @@ if uploaded is None:
         - Enhance Contrast
         - Histogram Equalization
         - CLAHE
+        - Endo Sharp
 
         **Noise reduction**
         - Gaussian Blur
@@ -1521,6 +1846,23 @@ with st.sidebar:
             8.0,
             2.5,
             0.1,
+        )
+
+
+    elif mode == "Endo Sharp":
+
+        st.subheader(
+            "Endo Sharp"
+        )
+
+        st.caption(
+            "Multi-stage enhancement designed to preserve "
+            "fine endodontic anatomical detail."
+        )
+
+        st.info(
+            "CLAHE → Spatial normalization → "
+            "Mild TV denoising → CLAHE → Sharpening"
         )
 
 
@@ -1812,6 +2154,23 @@ elif mode == "CLAHE":
     )
 
 
+elif mode == "Endo Sharp":
+
+    try:
+
+        processed = tv_clahe_endo_sharp(
+            processed
+        )
+
+    except Exception as exc:
+
+        st.error(
+            f"Endo Sharp could not be applied: {exc}"
+        )
+
+        st.stop()
+
+
 elif mode == "Gaussian Blur":
 
     processed = gaussian_blur(
@@ -1927,13 +2286,24 @@ elif mode == "Gamma Correction":
 
 
 # ============================================================
+# FINAL NORMALIZATION
+# ============================================================
+
+processed = normalize_to_uint8(
+    processed
+)
+
+
+# ============================================================
 # DISPLAY
 # ============================================================
 
 st.markdown(
-    f'<div class="operation-title">'
-    f'{mode}'
-    f'</div>',
+    f"""
+    <div class="operation-title">
+        {mode}
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -1982,27 +2352,24 @@ with col2:
 
 st.divider()
 
-info1, info2 = st.columns(2)
+info1, info2 = st.columns(
+    2,
+    gap="medium",
+)
 
 with info1:
 
     st.markdown(
-        """
+        f"""
         <div class="info-box">
             <div class="info-label">
                 Width
             </div>
             <div class="info-value">
+                {original.shape[1]} px
+            </div>
+        </div>
         """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        f"{original.shape[1]} px"
-    )
-
-    st.markdown(
-        "</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -2010,22 +2377,16 @@ with info1:
 with info2:
 
     st.markdown(
-        """
+        f"""
         <div class="info-box">
             <div class="info-label">
                 Height
             </div>
             <div class="info-value">
+                {original.shape[0]} px
+            </div>
+        </div>
         """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        f"{original.shape[0]} px"
-    )
-
-    st.markdown(
-        "</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -2051,8 +2412,14 @@ base_name = Path(
 safe_mode = (
     mode
     .lower()
-    .replace(" ", "_")
-    .replace("/", "-")
+    .replace(
+        " ",
+        "_",
+    )
+    .replace(
+        "/",
+        "-",
+    )
 )
 
 st.download_button(
@@ -2076,6 +2443,7 @@ st.markdown(
         color:#888;
         font-size:0.8rem;
         margin-top:2rem;
+        padding-bottom:1rem;
     ">
         Dental Image Processor ·
         Tasos Dimitrakopoulos · 2026

@@ -2095,5 +2095,3 @@ opencv-python-headless
 Pillow
 pydicom
 ```
-
-One small correction from the previous version: I also removed the **“Operation” metric underneath the images entirely**. The operation is now shown as a proper wrapping heading above the two images, so names such as **“Morphological Closing”** and **“Subtract Background”** cannot get truncated to `...`.

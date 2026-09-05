@@ -18,7 +18,7 @@ except ImportError:
 # ============================================================
 
 st.set_page_config(
-    page_title="Dental ImageJ Processor",
+    page_title="Dental Image Processor",
     page_icon="🦷",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -76,11 +76,11 @@ st.markdown(
 # TITLE
 # ============================================================
 
-st.title("🦷 Dental ImageJ Processor")
+st.title("🦷 Dental Image Processor")
 
 st.markdown(
     '<div class="subtitle">'
-    "Dental radiograph enhancement using ImageJ/Fiji-style image-processing operations"
+    "Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών"
     "</div>",
     unsafe_allow_html=True,
 )

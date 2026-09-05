@@ -164,24 +164,15 @@ st.markdown(
 # HEADER
 # ============================================================
 
-st.markdown(
-    """
-    <div class="app-header">
-        <div class="app-title">
-            🦷 Dental Image Processor
-        </div>
+st.markdown("""
+<div class="app-subtitle">
+    Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών
+</div>
 
-        <div class="app-subtitle">
-            Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών
-        </div>
-
-        <div class="app-author">
-            created by Tasos Dimitrakopoulos 2026
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+<div class="app-author">
+    created by Tasos Dimitrakopoulos 2026
+</div>
+""", unsafe_allow_html=True)
 
 
 # ============================================================

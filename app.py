@@ -2083,14 +2083,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-```
-
-And use this as your `requirements.txt`:
-
-```text
-streamlit
-numpy
-opencv-python-headless
-Pillow
-pydicom
-```

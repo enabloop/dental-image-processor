@@ -165,6 +165,8 @@ st.markdown(
 # ============================================================
 
 st.markdown("""
+<div class="app-header">
+    <div class="app-title">🦷 Dental Image Processor</div>
 <div class="app-subtitle">
     Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών
 </div>

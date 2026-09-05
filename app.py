@@ -1,3 +1,4 @@
+```python
 import io
 from pathlib import Path
 
@@ -32,31 +33,59 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+
     .block-container {
         padding-top: 1.5rem;
         padding-bottom: 2rem;
         max-width: 1500px;
     }
 
-    h1 {
-        margin-bottom: 0.15rem;
+    .app-title {
+        font-size: 2.4rem;
+        font-weight: 700;
+        margin-bottom: 0.1rem;
     }
 
-    .subtitle {
-        color: #777;
+    .app-subtitle {
+        font-size: 1.15rem;
+        color: #666;
+        margin-bottom: 0.1rem;
+    }
+
+    .app-author {
+        font-size: 0.9rem;
+        color: #888;
         margin-bottom: 1.5rem;
     }
 
-    .mode-box {
-        padding: 0.7rem 0.9rem;
-        border-radius: 10px;
-        background: rgba(120,120,120,0.08);
+    .operation-title {
+        font-size: 1.35rem;
+        font-weight: 600;
         margin-bottom: 0.8rem;
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
     }
 
-    .small-note {
+    .info-box {
+        padding: 0.7rem 0.9rem;
+        border-radius: 10px;
+        background: rgba(120, 120, 120, 0.08);
+        min-height: 70px;
+    }
+
+    .info-label {
+        font-size: 0.82rem;
         color: #777;
-        font-size: 0.85rem;
+        margin-bottom: 0.15rem;
+    }
+
+    .info-value {
+        font-size: 1.05rem;
+        font-weight: 600;
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
     }
 
     div[data-testid="stImage"] img {
@@ -66,6 +95,7 @@ st.markdown(
     .stDownloadButton button {
         width: 100%;
     }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -73,15 +103,25 @@ st.markdown(
 
 
 # ============================================================
-# TITLE
+# APP HEADER
 # ============================================================
 
-st.title("🦷 Dental Image Processor")
+st.markdown(
+    '<div class="app-title">🦷 Dental Image Processor</div>',
+    unsafe_allow_html=True,
+)
 
 st.markdown(
-    '<div class="subtitle">'
-    "Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών"
-    "</div>",
+    '<div class="app-subtitle">'
+    'Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="app-author">'
+    'created by Tasos Dimitrakopoulos 2026'
+    '</div>',
     unsafe_allow_html=True,
 )
 
@@ -92,10 +132,7 @@ st.markdown(
 
 def normalize_to_uint8(image):
     """
-    Convert arbitrary numeric image data to uint8.
-
-    Percentile normalization is used for floating-point and
-    higher-bit-depth images so that display is robust.
+    Convert an image of arbitrary numeric depth to uint8.
     """
     image = np.asarray(image)
 
@@ -122,6 +159,7 @@ def normalize_to_uint8(image):
         return np.zeros(image.shape, dtype=np.uint8)
 
     image = (image - low) / (high - low)
+
     image = np.clip(image, 0, 1)
 
     return (image * 255).astype(np.uint8)
@@ -129,7 +167,7 @@ def normalize_to_uint8(image):
 
 def ensure_gray(image):
     """
-    Convert an image to grayscale.
+    Convert RGB/RGBA images to grayscale.
     """
     image = np.asarray(image)
 
@@ -137,26 +175,41 @@ def ensure_gray(image):
         return image
 
     if image.ndim == 3:
+
         if image.shape[2] == 1:
             return image[:, :, 0]
 
-        return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        if image.shape[2] == 4:
+            return cv2.cvtColor(
+                image,
+                cv2.COLOR_RGBA2GRAY,
+            )
+
+        return cv2.cvtColor(
+            image,
+            cv2.COLOR_RGB2GRAY,
+        )
 
     raise ValueError("Unsupported image dimensions.")
 
 
 def prepare_image(image):
     """
-    Convert input to display/processable uint8 grayscale.
+    Prepare an uploaded image for processing.
     """
     image = ensure_gray(image)
+
     return normalize_to_uint8(image)
 
 
-def resize_for_display(image, max_width=1400, max_height=1000):
+def resize_for_display(
+    image,
+    max_width=1400,
+    max_height=1000,
+):
     """
-    Resize only for display.
-    Processing is performed on the original resolution.
+    Resize only for browser display.
+    Processing remains at original resolution.
     """
     h, w = image.shape[:2]
 
@@ -181,14 +234,19 @@ def resize_for_display(image, max_width=1400, max_height=1000):
 
 def image_to_png_bytes(image):
     """
-    Convert grayscale uint8 image to PNG bytes.
+    Convert processed image to PNG bytes.
     """
     image = normalize_to_uint8(image)
 
-    ok, encoded = cv2.imencode(".png", image)
+    success, encoded = cv2.imencode(
+        ".png",
+        image,
+    )
 
-    if not ok:
-        raise ValueError("Could not encode image.")
+    if not success:
+        raise ValueError(
+            "Could not encode processed image."
+        )
 
     return encoded.tobytes()
 
@@ -199,121 +257,215 @@ def image_to_png_bytes(image):
 
 def load_dicom(file_bytes):
     """
-    Load DICOM pixel data and apply common modality transformations.
+    Load a DICOM image and apply common modality transformations.
     """
     if not DICOM_AVAILABLE:
         raise RuntimeError(
-            "pydicom is not installed. Add pydicom to requirements.txt."
+            "pydicom is not installed. "
+            "Add pydicom to requirements.txt."
         )
 
-    ds = pydicom.dcmread(io.BytesIO(file_bytes))
+    ds = pydicom.dcmread(
+        io.BytesIO(file_bytes)
+    )
 
-    pixels = ds.pixel_array.astype(np.float32)
+    pixels = ds.pixel_array.astype(
+        np.float32
+    )
 
-    slope = float(getattr(ds, "RescaleSlope", 1.0))
-    intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+    slope = float(
+        getattr(
+            ds,
+            "RescaleSlope",
+            1.0,
+        )
+    )
+
+    intercept = float(
+        getattr(
+            ds,
+            "RescaleIntercept",
+            0.0,
+        )
+    )
 
     pixels = pixels * slope + intercept
 
     photometric = str(
-        getattr(ds, "PhotometricInterpretation", "")
+        getattr(
+            ds,
+            "PhotometricInterpretation",
+            "",
+        )
     ).upper()
 
     if photometric == "MONOCHROME1":
         pixels = np.max(pixels) - pixels
 
-    # Apply window center/width when available.
-    wc = getattr(ds, "WindowCenter", None)
-    ww = getattr(ds, "WindowWidth", None)
+    window_center = getattr(
+        ds,
+        "WindowCenter",
+        None,
+    )
 
-    if wc is not None and ww is not None:
+    window_width = getattr(
+        ds,
+        "WindowWidth",
+        None,
+    )
+
+    if (
+        window_center is not None
+        and window_width is not None
+    ):
         try:
-            if isinstance(wc, pydicom.multival.MultiValue):
-                wc = float(wc[0])
-            else:
-                wc = float(wc)
 
-            if isinstance(ww, pydicom.multival.MultiValue):
-                ww = float(ww[0])
+            if isinstance(
+                window_center,
+                pydicom.multival.MultiValue,
+            ):
+                window_center = float(
+                    window_center[0]
+                )
             else:
-                ww = float(ww)
+                window_center = float(
+                    window_center
+                )
 
-            if ww > 0:
-                low = wc - ww / 2.0
-                high = wc + ww / 2.0
-                pixels = np.clip(pixels, low, high)
+            if isinstance(
+                window_width,
+                pydicom.multival.MultiValue,
+            ):
+                window_width = float(
+                    window_width[0]
+                )
+            else:
+                window_width = float(
+                    window_width
+                )
+
+            if window_width > 0:
+
+                low = (
+                    window_center
+                    - window_width / 2.0
+                )
+
+                high = (
+                    window_center
+                    + window_width / 2.0
+                )
+
+                pixels = np.clip(
+                    pixels,
+                    low,
+                    high,
+                )
 
         except Exception:
             pass
 
-    return normalize_to_uint8(pixels)
+    return normalize_to_uint8(
+        pixels
+    )
 
 
-def load_uploaded_image(uploaded_file):
+def load_uploaded_image(
+    uploaded_file
+):
     """
-    Load PNG/JPG/TIFF/DICOM.
+    Load PNG, JPG, JPEG, TIFF or DICOM.
     """
     data = uploaded_file.getvalue()
 
-    suffix = Path(uploaded_file.name).suffix.lower()
+    suffix = Path(
+        uploaded_file.name
+    ).suffix.lower()
 
-    if suffix in [".dcm", ".dicom"]:
+    if suffix in [
+        ".dcm",
+        ".dicom",
+    ]:
         return load_dicom(data)
 
     try:
-        pil = Image.open(io.BytesIO(data))
-        arr = np.array(pil)
-        return prepare_image(arr)
+
+        pil = Image.open(
+            io.BytesIO(data)
+        )
+
+        array = np.array(pil)
+
+        return prepare_image(array)
 
     except Exception:
-        # Some DICOM files do not have .dcm extension.
+
         if DICOM_AVAILABLE:
+
             try:
                 return load_dicom(data)
+
             except Exception:
                 pass
 
         raise ValueError(
-            "Could not read this file as an image or DICOM."
+            "Could not read this file as "
+            "an image or DICOM."
         )
 
 
 # ============================================================
-# IMAGEJ-STYLE CONTRAST
+# CONTRAST
 # ============================================================
 
-def imagej_enhance_contrast(
+def enhance_contrast(
     image,
     saturated=0.35,
-    normalize=True,
 ):
     """
-    ImageJ-style histogram stretching.
-
-    ImageJ's Enhance Contrast command uses histogram stretching
-    and optionally normalization/equalization.
+    Histogram-based contrast stretching.
     """
-    image = image.astype(np.float32)
+    image = image.astype(
+        np.float32
+    )
 
     flat = image.ravel()
 
-    low = np.percentile(flat, saturated / 2.0)
-    high = np.percentile(flat, 100.0 - saturated / 2.0)
+    low = np.percentile(
+        flat,
+        saturated / 2.0,
+    )
+
+    high = np.percentile(
+        flat,
+        100.0 - saturated / 2.0,
+    )
 
     if high <= low:
-        return normalize_to_uint8(image)
+        return normalize_to_uint8(
+            image
+        )
 
-    result = (image - low) * 255.0 / (high - low)
+    result = (
+        (image - low)
+        * 255.0
+        / (high - low)
+    )
 
-    result = np.clip(result, 0, 255)
+    result = np.clip(
+        result,
+        0,
+        255,
+    )
 
-    if normalize:
-        return result.astype(np.uint8)
+    return result.astype(
+        np.uint8
+    )
 
-    return result.astype(np.uint8)
 
-
-def histogram_equalization(image):
+def histogram_equalization(
+    image
+):
     return cv2.equalizeHist(
         normalize_to_uint8(image)
     )
@@ -323,76 +475,99 @@ def histogram_equalization(image):
 # CLAHE
 # ============================================================
 
-def imagej_clahe(
+def apply_clahe(
     image,
-    block_size=127,
+    block_size=100,
     bins=256,
-    max_slope=3.0,
+    max_slope=2.5,
 ):
     """
-    Practical OpenCV implementation of CLAHE.
-
-    ImageJ/Fiji's CLAHE exposes:
-        block size
-        histogram bins
-        maximum slope
-
-    OpenCV uses:
-        tile grid
-        clip limit
-
-    The mapping below provides a controllable ImageJ-like
-    interface while using OpenCV's optimized CLAHE engine.
+    Local contrast enhancement.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
     h, w = image.shape
 
-    tile_x = max(2, int(round(w / block_size)))
-    tile_y = max(2, int(round(h / block_size)))
+    tile_x = max(
+        2,
+        int(round(
+            w / block_size
+        )),
+    )
 
-    tile_x = min(tile_x, 32)
-    tile_y = min(tile_y, 32)
+    tile_y = max(
+        2,
+        int(round(
+            h / block_size
+        )),
+    )
 
-    # Map ImageJ-like slope to OpenCV clip limit.
-    clip_limit = max(1.0, float(max_slope))
+    tile_x = min(
+        tile_x,
+        32,
+    )
+
+    tile_y = min(
+        tile_y,
+        32,
+    )
+
+    clip_limit = max(
+        1.0,
+        float(max_slope),
+    )
 
     clahe = cv2.createCLAHE(
         clipLimit=clip_limit,
-        tileGridSize=(tile_x, tile_y),
+        tileGridSize=(
+            tile_x,
+            tile_y,
+        ),
     )
 
-    return clahe.apply(image)
+    return clahe.apply(
+        image
+    )
 
 
 # ============================================================
-# GAUSSIAN
+# GAUSSIAN BLUR
 # ============================================================
 
-def gaussian_blur(image, sigma):
-    image = normalize_to_uint8(image)
+def gaussian_blur(
+    image,
+    sigma,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
     sigma = float(sigma)
 
     if sigma <= 0:
         return image.copy()
 
-    k = max(3, int(round(sigma * 6)) | 1)
-
     return cv2.GaussianBlur(
         image,
-        (k, k),
+        (0, 0),
         sigmaX=sigma,
         sigmaY=sigma,
     )
 
 
 # ============================================================
-# MEDIAN
+# MEDIAN FILTER
 # ============================================================
 
-def median_filter(image, kernel):
-    image = normalize_to_uint8(image)
+def median_filter(
+    image,
+    kernel,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
     kernel = int(kernel)
 
@@ -409,49 +584,52 @@ def median_filter(image, kernel):
 
 
 # ============================================================
-# MEAN
+# MEAN FILTER
 # ============================================================
 
-def mean_filter(image, radius):
-    image = normalize_to_uint8(image)
+def mean_filter(
+    image,
+    radius,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = int(radius)
-
-    if radius < 1:
-        return image.copy()
+    radius = max(
+        1,
+        int(radius),
+    )
 
     size = radius * 2 + 1
 
     return cv2.blur(
         image,
-        (size, size),
+        (
+            size,
+            size,
+        ),
     )
 
 
 # ============================================================
-# IMAGEJ UNSHARP MASK
+# UNSHARP MASK
 # ============================================================
 
-def imagej_unsharp_mask(
+def unsharp_mask(
     image,
     sigma=1.0,
     weight=0.6,
 ):
     """
-    ImageJ-style Unsharp Mask.
-
-    Conceptually:
-
-        blurred = Gaussian(image)
-        highpass = image - blurred
-        result = image + weight * highpass
-
-    ImageJ describes Radius (Sigma) as the Gaussian sigma
-    and Mask Weight as the strength of the high-pass component.
+    High-frequency detail enhancement.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
-    original = image.astype(np.float32)
+    original = image.astype(
+        np.float32
+    )
 
     blurred = cv2.GaussianBlur(
         original,
@@ -460,36 +638,46 @@ def imagej_unsharp_mask(
         sigmaY=float(sigma),
     )
 
-    highpass = original - blurred
+    highpass = (
+        original - blurred
+    )
 
-    result = original + float(weight) * highpass
+    result = (
+        original
+        + float(weight) * highpass
+    )
 
-    result = np.clip(result, 0, 255)
+    result = np.clip(
+        result,
+        0,
+        255,
+    )
 
-    return result.astype(np.uint8)
+    return result.astype(
+        np.uint8
+    )
 
 
 # ============================================================
-# IMAGEJ SHARPEN
+# SHARPEN
 # ============================================================
 
-def imagej_sharpen(image, strength=1.0):
+def sharpen(
+    image,
+    strength=1.0,
+):
     """
-    ImageJ-style Sharpen operation.
-
-    ImageJ documents a 3x3 sharpening convolution:
-
-        -1 -1 -1
-        -1 12 -1
-        -1 -1 -1
-
-    The kernel is normalized here to produce a stable uint8 result.
+    Convolution-based sharpening.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
-    strength = float(strength)
+    strength = float(
+        strength
+    )
 
-    base = np.array(
+    base_kernel = np.array(
         [
             [-1, -1, -1],
             [-1, 12, -1],
@@ -498,31 +686,51 @@ def imagej_sharpen(image, strength=1.0):
         dtype=np.float32,
     )
 
-    kernel = np.eye(3, dtype=np.float32)
+    identity = np.zeros(
+        (3, 3),
+        dtype=np.float32,
+    )
 
-    kernel += (base - kernel) * strength
+    identity[1, 1] = 1.0
+
+    kernel = (
+        identity
+        + strength
+        * (base_kernel - identity)
+    )
 
     result = cv2.filter2D(
-        image.astype(np.float32),
+        image.astype(
+            np.float32
+        ),
         -1,
         kernel,
         borderType=cv2.BORDER_REPLICATE,
     )
 
-    return normalize_to_uint8(result)
+    return normalize_to_uint8(
+        result
+    )
 
 
 # ============================================================
-# SOBEL / FIND EDGES
+# SOBEL
 # ============================================================
 
-def sobel_edges(image, strength=1.0):
+def sobel_edges(
+    image,
+    strength=1.0,
+):
     """
-    ImageJ-style Find Edges based on Sobel derivatives.
+    Sobel edge detection.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
-    img = image.astype(np.float32)
+    img = image.astype(
+        np.float32
+    )
 
     gx = cv2.Sobel(
         img,
@@ -540,27 +748,38 @@ def sobel_edges(image, strength=1.0):
         ksize=3,
     )
 
-    magnitude = cv2.magnitude(gx, gy)
+    magnitude = cv2.magnitude(
+        gx,
+        gy,
+    )
 
-    magnitude *= float(strength)
+    magnitude *= float(
+        strength
+    )
 
-    return normalize_to_uint8(magnitude)
+    return normalize_to_uint8(
+        magnitude
+    )
 
 
 # ============================================================
 # LAPLACIAN
 # ============================================================
 
-def laplacian_enhance(
+def laplacian_enhancement(
     image,
     strength=0.5,
 ):
     """
     Laplacian-based detail enhancement.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
-    img = image.astype(np.float32)
+    img = image.astype(
+        np.float32
+    )
 
     lap = cv2.Laplacian(
         img,
@@ -568,16 +787,22 @@ def laplacian_enhance(
         ksize=3,
     )
 
-    result = img - float(strength) * lap
+    result = (
+        img
+        - float(strength) * lap
+    )
 
-    return normalize_to_uint8(result)
+    return normalize_to_uint8(
+        result
+    )
 
 
 # ============================================================
-# CONVOLUTION
+# CONVOLUTION KERNELS
 # ============================================================
 
 CONVOLUTION_KERNELS = {
+
     "Identity": np.array(
         [
             [0, 0, 0],
@@ -652,39 +877,72 @@ CONVOLUTION_KERNELS = {
 }
 
 
-def convolve_image(image, kernel_name, strength=1.0):
-    image = normalize_to_uint8(image)
+def convolve_image(
+    image,
+    kernel_name,
+    strength=1.0,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    kernel = CONVOLUTION_KERNELS[kernel_name].copy()
+    kernel = (
+        CONVOLUTION_KERNELS[
+            kernel_name
+        ].copy()
+    )
 
-    identity = np.zeros((3, 3), dtype=np.float32)
+    identity = np.zeros(
+        (3, 3),
+        dtype=np.float32,
+    )
+
     identity[1, 1] = 1.0
 
-    kernel = identity + float(strength) * (kernel - identity)
+    kernel = (
+        identity
+        + float(strength)
+        * (kernel - identity)
+    )
 
     result = cv2.filter2D(
-        image.astype(np.float32),
+        image.astype(
+            np.float32
+        ),
         -1,
         kernel,
         borderType=cv2.BORDER_REPLICATE,
     )
 
-    return normalize_to_uint8(result)
+    return normalize_to_uint8(
+        result
+    )
 
 
 # ============================================================
 # MINIMUM / MAXIMUM
 # ============================================================
 
-def minimum_filter(image, radius):
-    image = normalize_to_uint8(image)
+def minimum_filter(
+    image,
+    radius,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = max(1, int(radius))
+    radius = max(
+        1,
+        int(radius),
+    )
 
     size = radius * 2 + 1
 
     kernel = np.ones(
-        (size, size),
+        (
+            size,
+            size,
+        ),
         dtype=np.uint8,
     )
 
@@ -695,15 +953,26 @@ def minimum_filter(image, radius):
     )
 
 
-def maximum_filter(image, radius):
-    image = normalize_to_uint8(image)
+def maximum_filter(
+    image,
+    radius,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = max(1, int(radius))
+    radius = max(
+        1,
+        int(radius),
+    )
 
     size = radius * 2 + 1
 
     kernel = np.ones(
-        (size, size),
+        (
+            size,
+            size,
+        ),
         dtype=np.uint8,
     )
 
@@ -718,16 +987,27 @@ def maximum_filter(image, radius):
 # MORPHOLOGY
 # ============================================================
 
-def morphological_open(image, radius):
-    image = normalize_to_uint8(image)
+def morphological_opening(
+    image,
+    radius,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = max(1, int(radius))
+    radius = max(
+        1,
+        int(radius),
+    )
 
     size = radius * 2 + 1
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
-        (size, size),
+        (
+            size,
+            size,
+        ),
     )
 
     return cv2.morphologyEx(
@@ -737,16 +1017,27 @@ def morphological_open(image, radius):
     )
 
 
-def morphological_close(image, radius):
-    image = normalize_to_uint8(image)
+def morphological_closing(
+    image,
+    radius,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = max(1, int(radius))
+    radius = max(
+        1,
+        int(radius),
+    )
 
     size = radius * 2 + 1
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
-        (size, size),
+        (
+            size,
+            size,
+        ),
     )
 
     return cv2.morphologyEx(
@@ -765,20 +1056,26 @@ def subtract_background(
     radius=25,
 ):
     """
-    Rolling-ball-like background correction using morphological
-    opening. It is designed to provide the same type of operation
-    as ImageJ's Subtract Background command.
+    Background correction using morphological opening.
     """
-    image = normalize_to_uint8(image)
+    image = normalize_to_uint8(
+        image
+    )
 
-    radius = max(3, int(radius))
+    radius = max(
+        3,
+        int(radius),
+    )
 
     if radius % 2 == 0:
         radius += 1
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
-        (radius, radius),
+        (
+            radius,
+            radius,
+        ),
     )
 
     background = cv2.morphologyEx(
@@ -788,27 +1085,43 @@ def subtract_background(
     )
 
     result = (
-        image.astype(np.float32)
-        - background.astype(np.float32)
+        image.astype(
+            np.float32
+        )
+        - background.astype(
+            np.float32
+        )
         + 128.0
     )
 
-    return normalize_to_uint8(result)
+    return normalize_to_uint8(
+        result
+    )
 
 
 # ============================================================
 # GAMMA
 # ============================================================
 
-def gamma_correction(image, gamma):
-    image = normalize_to_uint8(image)
+def gamma_correction(
+    image,
+    gamma,
+):
+    image = normalize_to_uint8(
+        image
+    )
 
     gamma = float(gamma)
 
     if gamma <= 0:
         gamma = 1.0
 
-    normalized = image.astype(np.float32) / 255.0
+    normalized = (
+        image.astype(
+            np.float32
+        )
+        / 255.0
+    )
 
     result = np.power(
         normalized,
@@ -819,28 +1132,57 @@ def gamma_correction(image, gamma):
         result * 255.0,
         0,
         255,
-    ).astype(np.uint8)
+    ).astype(
+        np.uint8
+    )
 
 
 # ============================================================
 # DENTAL PRESETS
 # ============================================================
 
-def dental_endo(image):
+def dental_preset(
+    image,
+    sharpening=0.8,
+):
     """
-    Endodontic preset.
+    General dental enhancement.
+    """
+    result = enhance_contrast(
+        image,
+        saturated=0.35,
+    )
 
-    CLAHE
-        ->
-    mild Gaussian smoothing
-        ->
-    ImageJ-style Unsharp Mask
+    result = apply_clahe(
+        result,
+        block_size=100,
+        bins=256,
+        max_slope=2.0,
+    )
+
+    result = unsharp_mask(
+        result,
+        sigma=1.0,
+        weight=sharpening,
+    )
+
+    return result
+
+
+def endodontic_preset(
+    image,
+    clahe_slope=2.5,
+    usm_sigma=0.9,
+    usm_weight=1.8,
+):
     """
-    result = imagej_clahe(
+    Endodontic enhancement preset.
+    """
+    result = apply_clahe(
         image,
         block_size=80,
         bins=256,
-        max_slope=2.5,
+        max_slope=clahe_slope,
     )
 
     result = gaussian_blur(
@@ -848,68 +1190,40 @@ def dental_endo(image):
         sigma=0.45,
     )
 
-    result = imagej_unsharp_mask(
+    result = unsharp_mask(
         result,
-        sigma=0.9,
-        weight=1.8,
+        sigma=usm_sigma,
+        weight=usm_weight,
     )
 
     return result
 
 
-def dental_perio(image):
+def perio_bone_preset(
+    image,
+    contrast=0.35,
+    usm_sigma=1.5,
+    usm_weight=1.1,
+):
     """
-    Periodontal / bone preset.
-
-    Contrast enhancement
-        ->
-    CLAHE
-        ->
-    moderate Unsharp Mask
+    Periodontal and bone enhancement preset.
     """
-    result = imagej_enhance_contrast(
+    result = enhance_contrast(
         image,
-        saturated=0.35,
-        normalize=True,
+        saturated=contrast,
     )
 
-    result = imagej_clahe(
+    result = apply_clahe(
         result,
         block_size=100,
         bins=256,
         max_slope=2.2,
     )
 
-    result = imagej_unsharp_mask(
+    result = unsharp_mask(
         result,
-        sigma=1.5,
-        weight=1.1,
-    )
-
-    return result
-
-
-def dental_imagej_preset(image):
-    """
-    General-purpose ImageJ-style dental enhancement.
-    """
-    result = imagej_enhance_contrast(
-        image,
-        saturated=0.35,
-        normalize=True,
-    )
-
-    result = imagej_clahe(
-        result,
-        block_size=100,
-        bins=256,
-        max_slope=2.0,
-    )
-
-    result = imagej_unsharp_mask(
-        result,
-        sigma=1.0,
-        weight=0.8,
+        sigma=usm_sigma,
+        weight=usm_weight,
     )
 
     return result
@@ -934,7 +1248,10 @@ with st.sidebar:
             "dcm",
             "dicom",
         ],
-        help="PNG, JPG, TIFF and DICOM are supported.",
+        help=(
+            "PNG, JPG, TIFF and DICOM "
+            "files are supported."
+        ),
     )
 
     st.divider()
@@ -944,7 +1261,7 @@ with st.sidebar:
     mode = st.selectbox(
         "Choose operation",
         [
-            "ImageJ Dental Preset",
+            "Dental Enhancement",
             "Endodontic Preset",
             "Perio / Bone Preset",
             "Enhance Contrast",
@@ -954,7 +1271,7 @@ with st.sidebar:
             "Median Filter",
             "Mean Filter",
             "Unsharp Mask",
-            "ImageJ Sharpen",
+            "Sharpen",
             "Find Edges / Sobel",
             "Laplacian Enhancement",
             "Convolve",
@@ -971,18 +1288,19 @@ with st.sidebar:
 
 
 # ============================================================
-# MAIN APPLICATION
+# NO IMAGE
 # ============================================================
 
 if uploaded is None:
 
     st.info(
-        "Upload a dental radiograph from the sidebar to begin."
+        "Upload a dental radiograph "
+        "from the sidebar to begin."
     )
 
     st.markdown(
         """
-        ### Supported processing
+        ### Available operations
 
         **Contrast**
         - Enhance Contrast
@@ -991,31 +1309,34 @@ if uploaded is None:
 
         **Noise reduction**
         - Gaussian Blur
-        - Median
-        - Mean
+        - Median Filter
+        - Mean Filter
 
         **Sharpening**
-        - ImageJ Unsharp Mask
-        - ImageJ Sharpen
-        - Laplacian enhancement
+        - Unsharp Mask
+        - Sharpen
+        - Laplacian Enhancement
 
-        **Edges / convolution**
-        - Sobel / Find Edges
-        - Custom convolution kernels
+        **Edges and filtering**
+        - Find Edges / Sobel
+        - Convolve
 
         **Morphology**
         - Minimum
         - Maximum
-        - Opening
-        - Closing
+        - Morphological Opening
+        - Morphological Closing
 
         **Background**
-        - Rolling-ball-style background subtraction
+        - Subtract Background
+
+        **Intensity**
+        - Gamma Correction
 
         **Dental presets**
-        - General ImageJ Dental
-        - Endodontic
-        - Perio / Bone
+        - Dental Enhancement
+        - Endodontic Preset
+        - Perio / Bone Preset
         """
     )
 
@@ -1027,7 +1348,10 @@ if uploaded is None:
 # ============================================================
 
 try:
-    original = load_uploaded_image(uploaded)
+
+    original = load_uploaded_image(
+        uploaded
+    )
 
 except Exception as exc:
 
@@ -1038,7 +1362,9 @@ except Exception as exc:
     st.stop()
 
 
-original = normalize_to_uint8(original)
+original = normalize_to_uint8(
+    original
+)
 
 
 # ============================================================
@@ -1047,16 +1373,18 @@ original = normalize_to_uint8(original)
 
 with st.sidebar:
 
-    if mode == "ImageJ Dental Preset":
+    if mode == "Dental Enhancement":
 
-        st.subheader("Dental preset")
+        st.subheader(
+            "Dental Enhancement"
+        )
 
         st.caption(
-            "General-purpose ImageJ-style dental enhancement."
+            "General enhancement for dental radiographs."
         )
 
         preset_strength = st.slider(
-            "Final sharpening",
+            "Sharpening strength",
             0.0,
             2.0,
             0.8,
@@ -1066,10 +1394,16 @@ with st.sidebar:
 
     elif mode == "Endodontic Preset":
 
-        st.subheader("Endodontic")
+        st.subheader(
+            "Endodontic"
+        )
+
+        st.caption(
+            "Enhancement focused on fine endodontic detail."
+        )
 
         clahe_slope = st.slider(
-            "CLAHE maximum slope",
+            "Contrast strength",
             1.0,
             5.0,
             2.5,
@@ -1077,7 +1411,7 @@ with st.sidebar:
         )
 
         usm_sigma = st.slider(
-            "Unsharp Sigma",
+            "Sharpening Sigma",
             0.3,
             2.0,
             0.9,
@@ -1085,7 +1419,7 @@ with st.sidebar:
         )
 
         usm_weight = st.slider(
-            "Unsharp weight",
+            "Sharpening strength",
             0.0,
             3.0,
             1.8,
@@ -1095,10 +1429,16 @@ with st.sidebar:
 
     elif mode == "Perio / Bone Preset":
 
-        st.subheader("Perio / Bone")
+        st.subheader(
+            "Perio / Bone"
+        )
+
+        st.caption(
+            "Enhancement focused on periodontal and osseous detail."
+        )
 
         contrast = st.slider(
-            "Saturated pixels (%)",
+            "Contrast strength",
             0.05,
             2.0,
             0.35,
@@ -1106,7 +1446,7 @@ with st.sidebar:
         )
 
         usm_sigma = st.slider(
-            "Unsharp Sigma",
+            "Sharpening Sigma",
             0.5,
             3.0,
             1.5,
@@ -1114,7 +1454,7 @@ with st.sidebar:
         )
 
         usm_weight = st.slider(
-            "Unsharp weight",
+            "Sharpening strength",
             0.0,
             2.5,
             1.1,
@@ -1124,7 +1464,9 @@ with st.sidebar:
 
     elif mode == "Enhance Contrast":
 
-        st.subheader("ImageJ Enhance Contrast")
+        st.subheader(
+            "Enhance Contrast"
+        )
 
         saturated = st.slider(
             "Saturated pixels (%)",
@@ -1134,24 +1476,27 @@ with st.sidebar:
             0.01,
         )
 
-        normalize = st.checkbox(
-            "Normalize",
-            value=True,
-        )
-
 
     elif mode == "Histogram Equalization":
 
-        st.subheader("Histogram")
+        st.subheader(
+            "Histogram Equalization"
+        )
 
         st.caption(
-            "Global histogram equalization."
+            "Global histogram-based contrast enhancement."
         )
 
 
     elif mode == "CLAHE":
 
-        st.subheader("ImageJ-style CLAHE")
+        st.subheader(
+            "CLAHE"
+        )
+
+        st.caption(
+            "Local contrast enhancement."
+        )
 
         block_size = st.slider(
             "Block size",
@@ -1163,12 +1508,16 @@ with st.sidebar:
 
         bins = st.select_slider(
             "Histogram bins",
-            options=[64, 128, 256],
+            options=[
+                64,
+                128,
+                256,
+            ],
             value=256,
         )
 
         max_slope = st.slider(
-            "Maximum slope",
+            "Contrast limit",
             1.0,
             8.0,
             2.5,
@@ -1178,7 +1527,9 @@ with st.sidebar:
 
     elif mode == "Gaussian Blur":
 
-        st.subheader("Gaussian Blur")
+        st.subheader(
+            "Gaussian Blur"
+        )
 
         sigma = st.slider(
             "Sigma",
@@ -1191,18 +1542,28 @@ with st.sidebar:
 
     elif mode == "Median Filter":
 
-        st.subheader("Median Filter")
+        st.subheader(
+            "Median Filter"
+        )
 
         kernel = st.select_slider(
             "Kernel size",
-            options=[3, 5, 7, 9, 11],
+            options=[
+                3,
+                5,
+                7,
+                9,
+                11,
+            ],
             value=3,
         )
 
 
     elif mode == "Mean Filter":
 
-        st.subheader("Mean Filter")
+        st.subheader(
+            "Mean Filter"
+        )
 
         radius = st.slider(
             "Radius",
@@ -1214,10 +1575,16 @@ with st.sidebar:
 
     elif mode == "Unsharp Mask":
 
-        st.subheader("ImageJ Unsharp Mask")
+        st.subheader(
+            "Unsharp Mask"
+        )
+
+        st.caption(
+            "Enhances fine image detail and edge definition."
+        )
 
         sigma = st.slider(
-            "Radius / Sigma",
+            "Sigma",
             0.1,
             5.0,
             1.0,
@@ -1225,7 +1592,7 @@ with st.sidebar:
         )
 
         weight = st.slider(
-            "Mask weight",
+            "Strength",
             0.0,
             5.0,
             0.6,
@@ -1233,12 +1600,14 @@ with st.sidebar:
         )
 
 
-    elif mode == "ImageJ Sharpen":
+    elif mode == "Sharpen":
 
-        st.subheader("ImageJ Sharpen")
+        st.subheader(
+            "Sharpen"
+        )
 
         strength = st.slider(
-            "Sharpen strength",
+            "Strength",
             0.0,
             2.0,
             1.0,
@@ -1248,7 +1617,9 @@ with st.sidebar:
 
     elif mode == "Find Edges / Sobel":
 
-        st.subheader("Sobel")
+        st.subheader(
+            "Find Edges / Sobel"
+        )
 
         strength = st.slider(
             "Edge strength",
@@ -1261,7 +1632,9 @@ with st.sidebar:
 
     elif mode == "Laplacian Enhancement":
 
-        st.subheader("Laplacian")
+        st.subheader(
+            "Laplacian Enhancement"
+        )
 
         strength = st.slider(
             "Strength",
@@ -1274,11 +1647,15 @@ with st.sidebar:
 
     elif mode == "Convolve":
 
-        st.subheader("Convolution")
+        st.subheader(
+            "Convolve"
+        )
 
         kernel_name = st.selectbox(
             "Kernel",
-            list(CONVOLUTION_KERNELS.keys()),
+            list(
+                CONVOLUTION_KERNELS.keys()
+            ),
         )
 
         strength = st.slider(
@@ -1292,7 +1669,9 @@ with st.sidebar:
 
     elif mode == "Minimum":
 
-        st.subheader("Minimum")
+        st.subheader(
+            "Minimum"
+        )
 
         radius = st.slider(
             "Radius",
@@ -1304,7 +1683,9 @@ with st.sidebar:
 
     elif mode == "Maximum":
 
-        st.subheader("Maximum")
+        st.subheader(
+            "Maximum"
+        )
 
         radius = st.slider(
             "Radius",
@@ -1316,7 +1697,9 @@ with st.sidebar:
 
     elif mode == "Morphological Opening":
 
-        st.subheader("Opening")
+        st.subheader(
+            "Morphological Opening"
+        )
 
         radius = st.slider(
             "Radius",
@@ -1328,7 +1711,9 @@ with st.sidebar:
 
     elif mode == "Morphological Closing":
 
-        st.subheader("Closing")
+        st.subheader(
+            "Morphological Closing"
+        )
 
         radius = st.slider(
             "Radius",
@@ -1340,7 +1725,9 @@ with st.sidebar:
 
     elif mode == "Subtract Background":
 
-        st.subheader("Background subtraction")
+        st.subheader(
+            "Subtract Background"
+        )
 
         background_radius = st.slider(
             "Background radius",
@@ -1353,7 +1740,9 @@ with st.sidebar:
 
     elif mode == "Gamma Correction":
 
-        st.subheader("Gamma")
+        st.subheader(
+            "Gamma Correction"
+        )
 
         gamma = st.slider(
             "Gamma",
@@ -1371,77 +1760,39 @@ with st.sidebar:
 processed = original.copy()
 
 
-if mode == "ImageJ Dental Preset":
+if mode == "Dental Enhancement":
 
-    processed = imagej_enhance_contrast(
+    processed = dental_preset(
         processed,
-        saturated=0.35,
-        normalize=True,
-    )
-
-    processed = imagej_clahe(
-        processed,
-        block_size=100,
-        bins=256,
-        max_slope=2.0,
-    )
-
-    processed = imagej_unsharp_mask(
-        processed,
-        sigma=1.0,
-        weight=preset_strength,
+        sharpening=preset_strength,
     )
 
 
 elif mode == "Endodontic Preset":
 
-    processed = imagej_clahe(
+    processed = endodontic_preset(
         processed,
-        block_size=80,
-        bins=256,
-        max_slope=clahe_slope,
-    )
-
-    processed = gaussian_blur(
-        processed,
-        sigma=0.45,
-    )
-
-    processed = imagej_unsharp_mask(
-        processed,
-        sigma=usm_sigma,
-        weight=usm_weight,
+        clahe_slope=clahe_slope,
+        usm_sigma=usm_sigma,
+        usm_weight=usm_weight,
     )
 
 
 elif mode == "Perio / Bone Preset":
 
-    processed = imagej_enhance_contrast(
+    processed = perio_bone_preset(
         processed,
-        saturated=contrast,
-        normalize=True,
-    )
-
-    processed = imagej_clahe(
-        processed,
-        block_size=100,
-        bins=256,
-        max_slope=2.2,
-    )
-
-    processed = imagej_unsharp_mask(
-        processed,
-        sigma=usm_sigma,
-        weight=usm_weight,
+        contrast=contrast,
+        usm_sigma=usm_sigma,
+        usm_weight=usm_weight,
     )
 
 
 elif mode == "Enhance Contrast":
 
-    processed = imagej_enhance_contrast(
+    processed = enhance_contrast(
         processed,
         saturated=saturated,
-        normalize=normalize,
     )
 
 
@@ -1454,7 +1805,7 @@ elif mode == "Histogram Equalization":
 
 elif mode == "CLAHE":
 
-    processed = imagej_clahe(
+    processed = apply_clahe(
         processed,
         block_size=block_size,
         bins=bins,
@@ -1488,16 +1839,16 @@ elif mode == "Mean Filter":
 
 elif mode == "Unsharp Mask":
 
-    processed = imagej_unsharp_mask(
+    processed = unsharp_mask(
         processed,
         sigma=sigma,
         weight=weight,
     )
 
 
-elif mode == "ImageJ Sharpen":
+elif mode == "Sharpen":
 
-    processed = imagej_sharpen(
+    processed = sharpen(
         processed,
         strength=strength,
     )
@@ -1513,7 +1864,7 @@ elif mode == "Find Edges / Sobel":
 
 elif mode == "Laplacian Enhancement":
 
-    processed = laplacian_enhance(
+    processed = laplacian_enhancement(
         processed,
         strength=strength,
     )
@@ -1546,7 +1897,7 @@ elif mode == "Maximum":
 
 elif mode == "Morphological Opening":
 
-    processed = morphological_open(
+    processed = morphological_opening(
         processed,
         radius=radius,
     )
@@ -1554,7 +1905,7 @@ elif mode == "Morphological Opening":
 
 elif mode == "Morphological Closing":
 
-    processed = morphological_close(
+    processed = morphological_closing(
         processed,
         radius=radius,
     )
@@ -1580,16 +1931,31 @@ elif mode == "Gamma Correction":
 # DISPLAY
 # ============================================================
 
-display_original = resize_for_display(original)
-display_processed = resize_for_display(processed)
+st.markdown(
+    f'<div class="operation-title">'
+    f'{mode}'
+    f'</div>',
+    unsafe_allow_html=True,
+)
 
-st.subheader(mode)
+display_original = resize_for_display(
+    original
+)
 
-col1, col2 = st.columns(2)
+display_processed = resize_for_display(
+    processed
+)
+
+col1, col2 = st.columns(
+    2,
+    gap="medium",
+)
 
 with col1:
 
-    st.markdown("### Original")
+    st.markdown(
+        "### Original"
+    )
 
     st.image(
         display_original,
@@ -1600,7 +1966,9 @@ with col1:
 
 with col2:
 
-    st.markdown("### Processed")
+    st.markdown(
+        "### Processed"
+    )
 
     st.image(
         display_processed,
@@ -1615,48 +1983,117 @@ with col2:
 
 st.divider()
 
-info1, info2, info3 = st.columns(3)
+info1, info2 = st.columns(2)
 
 with info1:
-    st.metric(
-        "Width",
-        f"{original.shape[1]} px",
+
+    st.markdown(
+        """
+        <div class="info-box">
+            <div class="info-label">
+                Width
+            </div>
+            <div class="info-value">
+        """,
+        unsafe_allow_html=True,
     )
+
+    st.markdown(
+        f"{original.shape[1]} px"
+    )
+
+    st.markdown(
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
 
 with info2:
-    st.metric(
-        "Height",
-        f"{original.shape[0]} px",
+
+    st.markdown(
+        """
+        <div class="info-box">
+            <div class="info-label">
+                Height
+            </div>
+            <div class="info-value">
+        """,
+        unsafe_allow_html=True,
     )
 
-with info3:
-    st.metric(
-        "Operation",
-        mode,
+    st.markdown(
+        f"{original.shape[0]} px"
+    )
+
+    st.markdown(
+        "</div></div>",
+        unsafe_allow_html=True,
     )
 
 
 # ============================================================
-# DOWNLOAD
+# EXPORT
 # ============================================================
 
 st.divider()
 
-st.subheader("Export")
+st.subheader(
+    "Export"
+)
 
-png_bytes = image_to_png_bytes(processed)
+png_bytes = image_to_png_bytes(
+    processed
+)
 
-base_name = Path(uploaded.name).stem
+base_name = Path(
+    uploaded.name
+).stem
+
+safe_mode = (
+    mode
+    .lower()
+    .replace(" ", "_")
+    .replace("/", "-")
+)
 
 st.download_button(
     label="⬇️ Download processed PNG",
     data=png_bytes,
-    file_name=f"{base_name}_{mode.lower().replace(' ', '_').replace('/', '-')}.png",
+    file_name=(
+        f"{base_name}_{safe_mode}.png"
+    ),
     mime="image/png",
 )
 
 
-st.caption(
-    "Processing is performed on the original image resolution. "
-    "The displayed images may be resized only for browser viewing."
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.markdown(
+    """
+    <div style="
+        text-align:center;
+        color:#888;
+        font-size:0.8rem;
+        margin-top:2rem;
+    ">
+        Dental Image Processor ·
+        Tasos Dimitrakopoulos · 2026
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
+```
+
+And use this as your `requirements.txt`:
+
+```text
+streamlit
+numpy
+opencv-python-headless
+Pillow
+pydicom
+```
+
+One small correction from the previous version: I also removed the **“Operation” metric underneath the images entirely**. The operation is now shown as a proper wrapping heading above the two images, so names such as **“Morphological Closing”** and **“Subtract Background”** cannot get truncated to `...`.

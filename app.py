@@ -38,90 +38,138 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-
-    /* ---------- Main page ---------- */
+    :root {
+        --dental-accent: #2f6f8f;
+        --dental-accent-soft: rgba(47, 111, 143, 0.10);
+        --dental-border: rgba(90, 105, 115, 0.18);
+    }
 
     .block-container {
-        padding-top: 2.2rem !important;
+        padding-top: 1.35rem !important;
         padding-bottom: 2rem !important;
         max-width: 1500px;
         overflow: visible !important;
     }
 
-
-    /* ---------- App title ---------- */
-
+    /* ---------- Header ---------- */
     .app-header {
-        width: 100%;
-        overflow: visible !important;
-        margin-bottom: 1.4rem;
+        padding: 1.15rem 1.35rem 1.1rem;
+        margin-bottom: 1.25rem;
+        border: 1px solid var(--dental-border);
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(47,111,143,.08), rgba(120,120,120,.035));
     }
-
     .app-title {
-        font-size: 2.35rem;
-        font-weight: 700;
-        line-height: 1.35;
-        padding-top: 0.15rem;
-        padding-bottom: 0.1rem;
+        font-size: 2.15rem;
+        font-weight: 750;
+        line-height: 1.2;
         margin: 0;
-        overflow: visible !important;
         white-space: normal !important;
-        word-break: normal !important;
+        overflow: visible !important;
     }
-
     .app-subtitle {
-        font-size: 1.12rem;
+        font-size: 1.03rem;
         line-height: 1.4;
-        color: #666;
-        margin-top: 0.15rem;
-        margin-bottom: 0.15rem;
+        color: #66727a;
+        margin-top: .35rem;
     }
-
     .app-author {
-        font-size: 0.88rem;
-        line-height: 1.4;
-        color: #888;
-        margin-top: 0.05rem;
+        font-size: .78rem;
+        color: #8a9398;
+        margin-top: .45rem;
     }
 
+    /* ---------- Sidebar ---------- */
+    section[data-testid="stSidebar"] {
+        border-right: 1px solid var(--dental-border);
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 1rem !important;
+    }
+    .sidebar-section {
+        font-size: .72rem;
+        font-weight: 750;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        color: #75828a;
+        margin: .35rem 0 .45rem;
+    }
+    .mode-description {
+        padding: .8rem .9rem;
+        margin: .55rem 0 .9rem;
+        border-radius: 12px;
+        background: var(--dental-accent-soft);
+        border: 1px solid rgba(47,111,143,.16);
+    }
+    .mode-description-title {
+        font-size: .74rem;
+        font-weight: 750;
+        text-transform: uppercase;
+        letter-spacing: .05em;
+        color: var(--dental-accent);
+        margin-bottom: .35rem;
+    }
+    .mode-description-text {
+        font-size: .86rem;
+        line-height: 1.5;
+    }
 
-    /* ---------- Operation title ---------- */
-
+    /* ---------- Main content ---------- */
+    .viewer-card {
+        padding: .7rem;
+        border: 1px solid var(--dental-border);
+        border-radius: 14px;
+        background: rgba(120,120,120,.035);
+    }
+    .viewer-label {
+        font-size: .78rem;
+        font-weight: 750;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+        color: #66727a;
+        margin: .15rem .2rem .55rem;
+    }
     .operation-title {
-        font-size: 1.35rem;
-        font-weight: 600;
-        line-height: 1.35;
-        margin-top: 0.2rem;
-        margin-bottom: 0.8rem;
+        font-size: 1.45rem;
+        font-weight: 700;
+        line-height: 1.3;
+        margin: .15rem 0 .9rem;
         white-space: normal !important;
         overflow: visible !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
     }
+    .mode-badge {
+        display: inline-block;
+        padding: .32rem .62rem;
+        border-radius: 999px;
+        background: var(--dental-accent-soft);
+        color: var(--dental-accent);
+        font-size: .76rem;
+        font-weight: 700;
+        margin-bottom: .65rem;
+    }
 
-
-    /* ---------- Information boxes ---------- */
-
+    /* ---------- Info cards ---------- */
     .info-box {
         box-sizing: border-box;
         width: 100%;
-        min-height: 76px;
-        padding: 0.75rem 1rem;
-        border-radius: 10px;
-        background: rgba(120, 120, 120, 0.08);
-        overflow: hidden;
+        min-height: 70px;
+        padding: .72rem .9rem;
+        border-radius: 11px;
+        background: rgba(120,120,120,.055);
+        border: 1px solid var(--dental-border);
     }
-
     .info-label {
-        font-size: 0.82rem;
-        line-height: 1.3;
-        color: #777;
-        margin-bottom: 0.3rem;
+        font-size: .72rem;
+        text-transform: uppercase;
+        letter-spacing: .05em;
+        color: #7b858b;
+        margin-bottom: .22rem;
     }
-
     .info-value {
-        font-size: 1.08rem;
-        font-weight: 600;
+        font-size: .98rem;
+        font-weight: 650;
         line-height: 1.35;
         white-space: normal !important;
         overflow-wrap: anywhere !important;
@@ -129,31 +177,20 @@ st.markdown(
         margin: 0;
     }
 
-
-    /* ---------- Images ---------- */
-
-    div[data-testid="stImage"] img {
-        border-radius: 6px;
+    /* ---------- Streamlit controls ---------- */
+    div[data-testid="stFileUploaderDropzone"] {
+        border-radius: 12px;
     }
-
-
-    /* ---------- Download ---------- */
-
     .stDownloadButton button {
         width: 100%;
+        border-radius: 9px;
     }
-
-
-    /* ---------- Prevent clipping ---------- */
-
-    header[data-testid="stHeader"] {
+    div[data-testid="stImage"] img {
+        border-radius: 9px;
+    }
+    header[data-testid="stHeader"], section.main {
         overflow: visible !important;
     }
-
-    section.main {
-        overflow: visible !important;
-    }
-
     </style>
     """,
     unsafe_allow_html=True,
@@ -167,12 +204,8 @@ st.markdown(
 st.markdown("""
 <div class="app-header">
     <div class="app-title">🦷 Dental Image Processor</div>
-<div class="app-subtitle">
-    Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών
-</div>
-
-<div class="app-author">
-    created by Tasos Dimitrakopoulos 2026
+    <div class="app-subtitle">Επεξεργασία και βελτίωση οδοντιατρικών ακτινογραφιών</div>
+    <div class="app-author">created by Tasos Dimitrakopoulos 2026</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -1577,78 +1610,41 @@ MODE_DESCRIPTIONS = {
 
 with st.sidebar:
 
-    st.header("Image")
+    st.markdown('<div class="sidebar-section">Image</div>', unsafe_allow_html=True)
 
     uploaded = st.file_uploader(
         "Upload dental image",
-        type=[
-            "png",
-            "jpg",
-            "jpeg",
-            "tif",
-            "tiff",
-            "dcm",
-            "dicom",
-        ],
-        help=(
-            "PNG, JPG, TIFF and DICOM "
-            "files are supported."
-        ),
+        type=["png", "jpg", "jpeg", "tif", "tiff", "dcm", "dicom"],
+        help="PNG, JPG, TIFF and DICOM files are supported.",
     )
 
     st.divider()
 
-    st.header(
-        "Processing mode"
-    )
+    st.markdown('<div class="sidebar-section">Processing mode</div>', unsafe_allow_html=True)
 
     mode = st.selectbox(
         "Choose operation",
         [
-            "Dental Enhancement",
-            "Endodontic Preset",
-            "Perio / Bone Preset",
-            "Enhance Contrast",
-            "Histogram Equalization",
-            "CLAHE",
-            "Endo Sharp",
-            "Gaussian Blur",
-            "Median Filter",
-            "Mean Filter",
-            "Unsharp Mask",
-            "Sharpen",
-            "Find Edges / Sobel",
-            "Laplacian Enhancement",
-            "Convolve",
-            "Minimum",
-            "Maximum",
-            "Morphological Opening",
-            "Morphological Closing",
-            "Subtract Background",
-            "Gamma Correction",
+            "Dental Enhancement", "Endodontic Preset", "Perio / Bone Preset",
+            "Enhance Contrast", "Histogram Equalization", "CLAHE", "Endo Sharp",
+            "Gaussian Blur", "Median Filter", "Mean Filter", "Unsharp Mask", "Sharpen",
+            "Find Edges / Sobel", "Laplacian Enhancement", "Convolve", "Minimum", "Maximum",
+            "Morphological Opening", "Morphological Closing", "Subtract Background", "Gamma Correction",
         ],
+        label_visibility="collapsed",
     )
 
     st.markdown(
         f"""
-        <div style="
-            padding: 0.75rem 0.85rem;
-            margin-top: 0.65rem;
-            margin-bottom: 0.8rem;
-            border-radius: 10px;
-            background: rgba(120, 120, 120, 0.08);
-            border: 1px solid rgba(120, 120, 120, 0.16);
-        ">
-            <div style="font-weight:600; margin-bottom:0.35rem;">Πού μπορεί να φανεί χρήσιμο;</div>
-            <div style="line-height:1.45; font-size:0.88rem;">
-                {MODE_DESCRIPTIONS[mode]}
-            </div>
+        <div class="mode-description">
+            <div class="mode-description-title">Πού μπορεί να φανεί χρήσιμο;</div>
+            <div class="mode-description-text">{MODE_DESCRIPTIONS[mode]}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.divider()
+    st.markdown('<div class="sidebar-section">Adjustments</div>', unsafe_allow_html=True)
 
 
 # ============================================================
@@ -2339,52 +2335,26 @@ processed = normalize_to_uint8(
 # DISPLAY
 # ============================================================
 
+st.markdown('<div class="mode-badge">ACTIVE MODE</div>', unsafe_allow_html=True)
 st.markdown(
-    f"""
-    <div class="operation-title">
-        {mode}
-    </div>
-    """,
+    f'<div class="operation-title">{mode}</div>',
     unsafe_allow_html=True,
 )
 
-display_original = resize_for_display(
-    original
-)
+display_original = resize_for_display(original)
+display_processed = resize_for_display(processed)
 
-display_processed = resize_for_display(
-    processed
-)
-
-col1, col2 = st.columns(
-    2,
-    gap="medium",
-)
+col1, col2 = st.columns(2, gap="medium")
 
 with col1:
-
-    st.markdown(
-        "### Original"
-    )
-
-    st.image(
-        display_original,
-        use_container_width=True,
-        clamp=True,
-    )
-
+    st.markdown('<div class="viewer-card"><div class="viewer-label">Original radiograph</div>', unsafe_allow_html=True)
+    st.image(display_original, use_container_width=True, clamp=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with col2:
-
-    st.markdown(
-        "### Processed"
-    )
-
-    st.image(
-        display_processed,
-        use_container_width=True,
-        clamp=True,
-    )
+    st.markdown('<div class="viewer-card"><div class="viewer-label">Enhanced radiograph</div>', unsafe_allow_html=True)
+    st.image(display_processed, use_container_width=True, clamp=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============================================================
